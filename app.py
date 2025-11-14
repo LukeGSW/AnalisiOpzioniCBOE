@@ -1,10 +1,10 @@
 # File: app.py
 #
-# File principale dell'applicazione Streamlit SPX Analyzer.
-# [CORRETTO DEFINITIVO]
-# 1. Risolto 'StreamlitDuplicateElementId' aggiungendo 'key' uniche
-#    ai grafici Plotly.
-# 2. Rimosse le schede (tab) vuote come richiesto.
+# [AGGIORNATO DEFINITIVO]
+# 1. Aggiunto il tab "Statistical Models" con Max Pain, Expected Move, P/C Ratios.
+# 2. Modificato il "Summary Dashboard" per un layout verticale dei grafici.
+# 3. Aggiunto il grafico dei Volumi al Summary e al tab "Support/Resistance".
+# 4. Modificati i nomi dei tab per includere quello nuovo.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -15,11 +15,20 @@ import datetime as dt
 
 # --- Importa i nostri moduli custom ---
 from data_module import parse_cboe_csv
-from calculations_module import calculate_gex_metrics, calculate_oi_walls
+from calculations_module import (
+    calculate_gex_metrics, 
+    calculate_oi_walls,
+    calculate_max_pain,          # <-- Nuovo
+    calculate_pc_ratios,       # <-- Nuovo
+    calculate_expected_move,   # <-- Nuovo
+    calculate_volume_profile   # <-- Nuovo
+)
 from visualization_module import (
     create_gex_profile_chart, 
     create_oi_profile_chart, 
-    create_volatility_surface_3d
+    create_volatility_surface_3d,
+    create_volume_profile_chart, # <-- Nuovo
+    create_max_pain_chart        # <-- Nuovo
 )
 
 # -----------------------------------------------------------------------------
@@ -36,17 +45,14 @@ st.set_page_config(
 # Applica il tema scuro professionale (Sez 5.3)
 st.markdown("""
 <style>
-    /* Tema scuro di base */
     .main { background-color: #0e1117; }
-    /* Font (come da Sez. 5.3) */
     body, .stApp, .stTextInput > div > div > input, .stSelectbox > div > div { 
         font-family: 'Inter', sans-serif; 
         color: #e5e7eb; 
     }
-    /* Stile per le 'Metrics Cards' (st.metric) */
     div[data-testid="stMetric"] {
-        background-color: #111827; /* Colore plot_bgcolor */
-        border: 1px solid #1f2937; /* Colore griglia */
+        background-color: #111827; 
+        border: 1px solid #1f2937; 
         border-radius: 8px;
         padding: 10px;
     }
@@ -60,10 +66,8 @@ st.markdown(f"Powered by **Kriterion Quant**")
 # -----------------------------------------------------------------------------
 # 2. LOGICA DI CARICAMENTO E CACHING DEI DATI
 # -----------------------------------------------------------------------------
-
 @st.cache_data
 def load_data(uploaded_file):
-    """Funzione wrapper (cache) per il nostro modulo di parsing."""
     try:
         df_processed, spot_price, data_timestamp = parse_cboe_csv(uploaded_file)
         if df_processed is None:
@@ -88,9 +92,8 @@ else:
     st.info("In attesa del caricamento del file CSV...")
 
 # -----------------------------------------------------------------------------
-# 3. CORPO PRINCIPALE DELL'APP (Appare solo se i dati sono caricati)
+# 3. CORPO PRINCIPALE DELL'APP
 # -----------------------------------------------------------------------------
-
 if df_processed is not None and spot_price is not None:
     
     # --- 3.1. Barra dei Controlli (Selettore Scadenza) ---
@@ -114,29 +117,34 @@ if df_processed is not None and spot_price is not None:
         df_processed['Expiration Date'] == selected_expiry_date
     ].copy()
 
-    # --- 3.3. Calcola TUTTI i KPI *una sola volta* ---
-    gex_metrics = calculate_gex_metrics(df_selected_expiry, spot_price)
-    oi_metrics = calculate_oi_walls(df_selected_expiry, spot_price)
+    # --- 3.3. Calcola TUTTI i KPI (una sola volta) ---
+    with st.spinner("Calcolo metriche per la scadenza..."):
+        gex_metrics = calculate_gex_metrics(df_selected_expiry, spot_price)
+        oi_metrics = calculate_oi_walls(df_selected_expiry, spot_price)
+        vol_metrics = calculate_volume_profile(df_selected_expiry, spot_price) # <-- Nuovo
+        max_pain_strike, df_payouts = calculate_max_pain(df_selected_expiry)  # <-- Nuovo
+        pc_ratios = calculate_pc_ratios(df_selected_expiry)                  # <-- Nuovo
+        expected_move = calculate_expected_move(df_selected_expiry, spot_price) # <-- Nuovo
     
-    # --- 3.4. Architettura Tab (Pulita) ---
-    # [CORREZIONE] Rimosse le tab non utilizzate
-    tab_summary, tab_gex, tab_oi, tab_vol = st.tabs([
+    # --- 3.4. Architettura Tab (Aggiornata) ---
+    tab_summary, tab_gex, tab_oi_vol, tab_stats, tab_vol_surf = st.tabs([
         '📋 Summary Dashboard',
         '📊 Gamma Analysis',
-        '🎯 Support/Resistance', 
+        '🎯 Support/Resistance (OI & Vol)', # <-- Tab rinominato
+        '📉 Statistical Models',           # <-- Nuovo Tab
         '📈 Volatility Surface'
     ])
 
     # -----------------------------------------------------------------
-    # POPOLAMENTO TAB 0: SUMMARY DASHBOARD (Sez 5.2, Tab 7)
+    # POPOLAMENTO TAB 0: SUMMARY DASHBOARD
     # -----------------------------------------------------------------
     with tab_summary:
         st.header(f"Executive Summary per {selected_expiry_label}")
         
-        # Key Metrics Grid (Sez 5.2, Tab 7)
+        # Key Metrics Grid
         st.subheader("Key Metrics Grid (per la scadenza selezionata)")
         
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5) # Aggiunta colonna
         col1.metric(label="Spot Price", value=f"{spot_price:.2f}")
         col2.metric(
             label="Net GEX (Scadenza)",
@@ -144,72 +152,97 @@ if df_processed is not None and spot_price is not None:
             delta="SHORT" if gex_metrics['total_net_gex'] < 0 else "LONG",
             delta_color="inverse"
         )
-        col3.metric(
-            label="🛡️ Put Wall (Supporto)",
-            value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A"
-        )
-        col4.metric(
-            label="🛑 Call Wall (Resistenza)",
-            value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A"
-        )
+        col3.metric(label="🛡️ Put Wall (Supporto)", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A")
+        col4.metric(label="🛑 Call Wall (Resistenza)", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A")
+        col5.metric(label="📍 Max Pain", value=f"{max_pain_strike:.0f}" if max_pain_strike else "N/A")
         
         st.divider()
-        
-        # Mini Charts Dashboard (Sez 5.2, Tab 7)
         st.subheader("Mini Charts Dashboard")
         
-        col1, col2 = st.columns(2)
+        # --- [MODIFICA] Layout Verticale (rimosse le colonne) ---
         
-        with col1:
-            st.markdown("#### Profilo GEX (per Scadenza)")
-            fig_gex = create_gex_profile_chart(
-                gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
-            )
-            # [CORREZIONE] Aggiunta key unica
-            st.plotly_chart(fig_gex, use_container_width=True, key="summary_gex_chart")
+        st.markdown("#### Profilo GEX (per Scadenza)")
+        fig_gex = create_gex_profile_chart(
+            gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
+        )
+        st.plotly_chart(fig_gex, use_container_width=True, key="summary_gex_chart")
 
-        with col2:
-            st.markdown("#### Distribuzione OI (per Scadenza)")
-            fig_oi = create_oi_profile_chart(
-                oi_metrics['df_oi_profile'], spot_price, selected_expiry_label
-            )
-            # [CORREZIONE] Aggiunta key unica
-            st.plotly_chart(fig_oi, use_container_width=True, key="summary_oi_chart")
+        st.markdown("#### Distribuzione Open Interest (per Scadenza)")
+        fig_oi = create_oi_profile_chart(
+            oi_metrics['df_oi_profile'], spot_price, selected_expiry_label
+        )
+        st.plotly_chart(fig_oi, use_container_width=True, key="summary_oi_chart")
+        
+        # --- [NUOVO] Aggiunta Grafico Volumi al Summary ---
+        st.markdown("#### Distribuzione Volumi (per Scadenza)")
+        fig_vol = create_volume_profile_chart(
+            vol_metrics['df_vol_profile'], spot_price, selected_expiry_label
+        )
+        st.plotly_chart(fig_vol, use_container_width=True, key="summary_vol_chart")
 
     # -----------------------------------------------------------------
-    # POPOLAMENTO TAB 1: GAMMA ANALYSIS (Sez 5.2)
+    # POPOLAMENTO TAB 1: GAMMA ANALYSIS
     # -----------------------------------------------------------------
     with tab_gex:
         st.header(f"Analisi Gamma (GEX) per {selected_expiry_label}")
-        
         col1, col2, col3 = st.columns(3)
-        col1.metric(label="Net GEX (per questa scadenza)", value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B")
-        col2.metric(label="Gamma Switch Point (GEX=0)", value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] else "N/A")
+        col1.metric(label="Net GEX", value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B")
+        col2.metric(label="Gamma Switch Point", value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] else "N/A")
         col3.metric(label="Spot-Switch Delta", value=f"{gex_metrics['spot_switch_delta']:.2f}" if gex_metrics['spot_switch_delta'] else "N/A")
-        
-        # [CORREZIONE] Aggiunta key unica
-        st.plotly_chart(fig_gex, use_container_width=True, key="gex_tab_chart")
+        st.plotly_chart(fig_gex, use_container_width=True, key="gex_tab_chart") # Riuso fig_gex
 
     # -----------------------------------------------------------------
-    # POPOLAMENTO TAB 2: SUPPORT/RESISTANCE (Sez 5.2)
+    # POPOLAMENTO TAB 2: SUPPORT/RESISTANCE (OI & Vol)
     # -----------------------------------------------------------------
-    with tab_oi:
-        st.header(f"Supporti e Resistenze (OI) per {selected_expiry_label}")
+    with tab_oi_vol:
+        st.header(f"Supporti e Resistenze (OI & Volumi) per {selected_expiry_label}")
         
+        st.subheader("Metriche Open Interest (Posizionamento)")
         col1, col2 = st.columns(2)
-        col1.metric(label="🛡️ Put Wall (Supporto)", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A", help=f"OI: {oi_metrics['put_wall_oi']:,.0f}")
-        col2.metric(label="🛑 Call Wall (Resistenza)", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A", help=f"OI: {oi_metrics['call_wall_oi']:,.0f}")
+        col1.metric(label="🛡️ Put Wall", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A", help=f"OI: {oi_metrics['put_wall_oi']:,.0f}")
+        col2.metric(label="🛑 Call Wall", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A", help=f"OI: {oi_metrics['call_wall_oi']:,.0f}")
         
-        # [CORREZIONE] Aggiunta key unica
-        st.plotly_chart(fig_oi, use_container_width=True, key="oi_tab_chart")
+        st.plotly_chart(fig_oi, use_container_width=True, key="oi_tab_chart") # Riuso fig_oi
+        
+        st.divider()
+        
+        st.subheader("Metriche Volumi (Attività di Giornata)")
+        st.plotly_chart(fig_vol, use_container_width=True, key="vol_tab_chart") # Riuso fig_vol
 
     # -----------------------------------------------------------------
-    # POPOLAMENTO TAB 3: VOLATILITY SURFACE (Sez 5.2)
+    # POPOLAMENTO TAB 3: STATISTICAL MODELS (Nuovo)
     # -----------------------------------------------------------------
-    with tab_vol:
+    with tab_stats:
+        st.header(f"Modelli Statistici per {selected_expiry_label}")
+        
+        st.subheader("Metriche Chiave di Posizionamento e Sentiment")
+        col1, col2, col3 = st.columns(3)
+        col1.metric(label="📍 Max Pain Strike", value=f"{max_pain_strike:.0f}" if max_pain_strike else "N/A", help="Lo strike che causa la massima perdita per i compratori di opzioni a scadenza.")
+        col2.metric(label="P/C Ratio (Open Interest)", value=f"{pc_ratios['pc_oi_ratio']:.3f}", help="Sentiment di posizionamento (Put OI / Call OI). > 1 = Bearish")
+        col3.metric(label="P/C Ratio (Volume)", value=f"{pc_ratios['pc_vol_ratio']:.3f}", help="Sentiment di attività (Put Vol / Call Vol). > 1 = Bearish")
+        
+        st.subheader("Movimento Atteso (Expected Move)")
+        em = expected_move
+        if em['move']:
+            col1, col2, col3 = st.columns(3)
+            col1.metric(label="Banda Superiore Attesa", value=f"{em['upper_band']:.2f}")
+            col2.metric(label="Banda Inferiore Attesa", value=f"{em['lower_band']:.2f}")
+            col3.metric(label="Movimento Atteso (+/-)", value=f"{em['move']:.2f}", help=f"Calcolato con IV ATM: {em['iv_atm']:.2%}")
+        else:
+            st.warning("Impossibile calcolare l'Expected Move (dati IV ATM mancanti).")
+
+        st.divider()
+        
+        st.subheader(f"Grafico Max Pain (Payout Totale a Scadenza)")
+        fig_max_pain = create_max_pain_chart(df_payouts, max_pain_strike, selected_expiry_label)
+        st.plotly_chart(fig_max_pain, use_container_width=True, key="max_pain_chart")
+        
+    # -----------------------------------------------------------------
+    # POPOLAMENTO TAB 4: VOLATILITY SURFACE
+    # -----------------------------------------------------------------
+    with tab_vol_surf:
         st.header("Superficie di Volatilità (Tutte le Scadenze)")
         
         with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
-            fig_vol = create_volatility_surface_3d(df_processed)
-            # [CORREZIONE] Aggiunta key unica (anche se non strettamente duplicata, è buona norma)
-            st.plotly_chart(fig_vol, use_container_width=True, key="vol_surface_chart")
+            fig_vol_surf = create_volatility_surface_3d(df_processed)
+            st.plotly_chart(fig_vol_surf, key="vol_surface_chart") # Rimosso use_container_width
