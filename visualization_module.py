@@ -85,7 +85,7 @@ def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, exp
         title=f"Profilo GEX (Scadenza: {expiry_label})",
         xaxis_title="Net GEX (Notional $)",
         yaxis_title="Strike Price",
-        height=800,  # <-- [MODIFICA] Aumentata altezza
+        height=1200,  # <-- [MODIFICA] Aumentata altezza
         yaxis=dict(autorange="reversed")
     )
     return fig
@@ -123,7 +123,7 @@ def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
         xaxis_title="Open Interest (Puts: Negativo, Calls: Positivo)",
         yaxis_title="Strike Price",
         barmode='relative',
-        height=800,  # <-- [MODIFICA] Aumentata altezza
+        height=1200,  # <-- [MODIFICA] Aumentata altezza
         yaxis=dict(autorange="reversed")
     )
     return fig
@@ -161,7 +161,7 @@ def create_volume_profile_chart(df_vol_profile, spot_price, expiry_label):
         xaxis_title="Volume (Puts: Negativo, Calls: Positivo)",
         yaxis_title="Strike Price",
         barmode='relative',
-        height=800,  # <-- [MODIFICA] Aumentata altezza
+        height=1200,  # <-- [MODIFICA] Aumentata altezza
         yaxis=dict(autorange="reversed")
     )
     return fig
@@ -192,7 +192,7 @@ def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
         title=f"Payout Totale a Scadenza (Max Pain) per {expiry_label}",
         xaxis_title="Payout Totale ($)",
         yaxis_title="Strike Price",
-        height=800,  # <-- [MODIFICA] Aumentata altezza
+        height=1200,  # <-- [MODIFICA] Aumentata altezza
         yaxis=dict(autorange="reversed")
     )
     return fig
