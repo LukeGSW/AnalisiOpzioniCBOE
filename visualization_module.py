@@ -1,11 +1,9 @@
 # File: visualization_module.py
 #
-# [AGGIORNATO]
-# 1. [RICHIESTA UTENTE] Modificati GEX e OI per essere istogrammi orizzontali
-#    (strike su Asse Y, 'orientation="h"').
-# 2. [RICHIESTA UTENTE] Aggiunta 'create_volume_profile_chart' (orizzontale).
-# 3. Aggiunta 'create_max_pain_chart' (orizzontale) per il nuovo tab.
-# 4. Altezza grafici 2D impostata a 700px, 3D a 900px.
+# [AGGIORNATO 3]
+# 1. Altezza grafici 2D (GEX, OI, Volume) portata a 800px
+#    per una migliore leggibilità verticale.
+# 2. Altezza 3D mantenuta a 900px.
 # -----------------------------------------------------------------------------
 
 import plotly.graph_objects as go
@@ -31,8 +29,8 @@ def apply_kriterion_theme(fig):
         plot_bgcolor=KRITERION_THEME['plot_bgcolor'],
         font=dict(color=KRITERION_THEME['font_color'], family='Inter, sans-serif'),
         xaxis=dict(gridcolor=KRITERION_THEME['gridcolor'], zerolinecolor=KRITERION_THEME['zerolinecolor']),
-        yaxis=dict(gridcolor=KRITERION_THEME['gridcolor']), # Asse Y ora ha la griglia
-        hovermode="y unified", # Cambiato in Y per l'orientamento orizzontale
+        yaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
+        hovermode="y unified",
         hoverlabel=dict(bgcolor="#1f2937", font_size=12, font_family="Monaco, monospace"),
         annotations=[
             dict(
@@ -63,22 +61,17 @@ def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, exp
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=df_plot['Net_GEX'],       # <-- X = Valore
-        y=df_plot['Strike'],      # <-- Y = Strike
-        orientation='h',          # <-- Orientamento Orizzontale
+        x=df_plot['Net_GEX'], y=df_plot['Strike'],
+        orientation='h',
         marker_color=df_plot['Color'], name="Net GEX",
         hovertemplate="<b>Strike: %{y}</b><br>Net GEX: %{x:,.0f}<extra></extra>"
     ))
-
-    # Linea Spot (ora Orizzontale)
     fig.add_hline(
         y=spot_price, line_width=2, line_dash="dot", 
         line_color=KRITERION_THEME['color_neutral'],
         annotation_text=f"Spot: {spot_price:.2f}",
         annotation_position="bottom right"
     )
-
-    # Linea Switch (ora Orizzontale)
     if gamma_switch_point:
         fig.add_hline(
             y=gamma_switch_point, line_width=2, line_dash="dash", 
@@ -90,10 +83,10 @@ def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, exp
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Profilo GEX (Scadenza: {expiry_label})",
-        xaxis_title="Net GEX (Notional $)", # <-- X = Valore
-        yaxis_title="Strike Price",         # <-- Y = Strike
-        height=700,
-        yaxis=dict(autorange="reversed") # Mostra strike alti in alto
+        xaxis_title="Net GEX (Notional $)",
+        yaxis_title="Strike Price",
+        height=800,  # <-- [MODIFICA] Aumentata altezza
+        yaxis=dict(autorange="reversed")
     )
     return fig
 
@@ -105,22 +98,18 @@ def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
     fig = go.Figure()
 
     fig.add_trace(go.Bar(
-        x=df_oi_profile['Calls_OI'],    # <-- X = Valore
-        y=df_oi_profile['Strike'],     # <-- Y = Strike
+        x=df_oi_profile['Calls_OI'], y=df_oi_profile['Strike'],
         orientation='h',
         name="Calls OI (Resistenza)", marker_color=KRITERION_THEME['color_bullish'],
         hovertemplate="<b>Strike: %{y}</b><br>Calls OI: %{x:,.0f}<extra></extra>"
     ))
     fig.add_trace(go.Bar(
-        x=df_oi_profile['Puts_OI_Neg'], # <-- X = Valore
-        y=df_oi_profile['Strike'],    # <-- Y = Strike
+        x=df_oi_profile['Puts_OI_Neg'], y=df_oi_profile['Strike'],
         orientation='h',
         name="Puts OI (Supporto)", marker_color=KRITERION_THEME['color_bearish'],
         customdata=df_oi_profile['Puts_OI'],
         hovertemplate="<b>Strike: %{y}</b><br>Puts OI: %{customdata:,.0f}<extra></extra>"
     ))
-
-    # Linea Spot (ora Orizzontale)
     fig.add_hline(
         y=spot_price, line_width=2, line_dash="dot", 
         line_color=KRITERION_THEME['color_neutral'],
@@ -131,37 +120,34 @@ def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Distribuzione OI (Scadenza: {expiry_label})",
-        xaxis_title="Open Interest (Puts: Negativo, Calls: Positivo)", # <-- X
-        yaxis_title="Strike Price",                                    # <-- Y
+        xaxis_title="Open Interest (Puts: Negativo, Calls: Positivo)",
+        yaxis_title="Strike Price",
         barmode='relative',
-        height=700,
-        yaxis=dict(autorange="reversed") # Mostra strike alti in alto
+        height=800,  # <-- [MODIFICA] Aumentata altezza
+        yaxis=dict(autorange="reversed")
     )
     return fig
 
 # -----------------------------------------------------------------------------
-# 4. [NUOVO] GRAFICO 3: VOLUME DISTRIBUTION (Orizzontale)
+# 4. GRAFICO 3: VOLUME DISTRIBUTION (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_volume_profile_chart(df_vol_profile, spot_price, expiry_label):
     """Crea il Grafico Volumi Bidirezionale (orizzontale, strike su Asse Y)."""
     fig = go.Figure()
 
     fig.add_trace(go.Bar(
-        x=df_vol_profile['Calls_Vol'],    # <-- X = Valore
-        y=df_vol_profile['Strike'],     # <-- Y = Strike
+        x=df_vol_profile['Calls_Vol'], y=df_vol_profile['Strike'],
         orientation='h',
         name="Calls Volume", marker_color=KRITERION_THEME['color_bullish'],
         hovertemplate="<b>Strike: %{y}</b><br>Calls Vol: %{x:,.0f}<extra></extra>"
     ))
     fig.add_trace(go.Bar(
-        x=df_vol_profile['Puts_Vol_Neg'], # <-- X = Valore
-        y=df_vol_profile['Strike'],     # <-- Y = Strike
+        x=df_vol_profile['Puts_Vol_Neg'], y=df_vol_profile['Strike'],
         orientation='h',
         name="Puts Volume", marker_color=KRITERION_THEME['color_bearish'],
         customdata=df_vol_profile['Puts_Vol'],
         hovertemplate="<b>Strike: %{y}</b><br>Puts Vol: %{customdata:,.0f}<extra></extra>"
     ))
-
     fig.add_hline(
         y=spot_price, line_width=2, line_dash="dot", 
         line_color=KRITERION_THEME['color_neutral'],
@@ -172,31 +158,28 @@ def create_volume_profile_chart(df_vol_profile, spot_price, expiry_label):
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Distribuzione Volumi (Scadenza: {expiry_label})",
-        xaxis_title="Volume (Puts: Negativo, Calls: Positivo)", # <-- X
-        yaxis_title="Strike Price",                              # <-- Y
+        xaxis_title="Volume (Puts: Negativo, Calls: Positivo)",
+        yaxis_title="Strike Price",
         barmode='relative',
-        height=700,
-        yaxis=dict(autorange="reversed") # Mostra strike alti in alto
+        height=800,  # <-- [MODIFICA] Aumentata altezza
+        yaxis=dict(autorange="reversed")
     )
     return fig
 
 # -----------------------------------------------------------------------------
-# 5. [NUOVO] GRAFICO 4: MAX PAIN (Orizzontale)
+# 5. GRAFICO 4: MAX PAIN (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
     """Crea il grafico del Payout Totale (Max Pain) (orizzontale)."""
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=df_payouts['Total_Payout'],  # <-- X = Valore
-        y=df_payouts['Strike'],      # <-- Y = Strike
+        x=df_payouts['Total_Payout'], y=df_payouts['Strike'],
         orientation='h',
         name="Total Payout ($)",
         marker_color=KRITERION_THEME['color_neutral'],
         hovertemplate="<b>Strike: %{y}</b><br>Total Payout: %{x:,.0f}<extra></extra>"
     ))
-    
-    # Linea Max Pain (ora Orizzontale)
     fig.add_hline(
         y=max_pain_strike, line_width=2, line_dash="dash", 
         line_color=KRITERION_THEME['color_accent'],
@@ -207,10 +190,10 @@ def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Payout Totale a Scadenza (Max Pain) per {expiry_label}",
-        xaxis_title="Payout Totale ($)", # <-- X
-        yaxis_title="Strike Price",      # <-- Y
-        height=700,
-        yaxis=dict(autorange="reversed") # Mostra strike alti in alto
+        xaxis_title="Payout Totale ($)",
+        yaxis_title="Strike Price",
+        height=800,  # <-- [MODIFICA] Aumentata altezza
+        yaxis=dict(autorange="reversed")
     )
     return fig
 
@@ -259,7 +242,7 @@ def create_volatility_surface_3d(df_all_processed):
                 bgcolor=KRITERION_THEME['paper_bgcolor'],
             ),
             scene_camera_eye=dict(x=1.8, y=-1.8, z=0.8),
-            height=900
+            height=900 # Altezza 3D mantenuta a 900
         )
         return fig
 
