@@ -1,8 +1,10 @@
 # File: calculations_module.py
 #
-# Modulo per i calcoli quantitativi.
-# Contiene la logica per GEX, OI Walls, e altre metriche.
-# Come da Sezione 3.2 del documento di progettazione.
+# [AGGIORNATO]
+# 1. Aggiunta funzione calculate_max_pain()
+# 2. Aggiunta funzione calculate_pc_ratios()
+# 3. Aggiunta funzione calculate_expected_move()
+# Come da Sezione 4.1 e 4.4 del documento di progettazione.
 # -----------------------------------------------------------------------------
 
 import pandas as pd
@@ -11,23 +13,16 @@ import numpy as np
 def calculate_gex_metrics(df_selected_expiry, spot_price):
     """
     Calcola le metriche GEX per una *singola* scadenza.
-    
-    Args:
-        df_selected_expiry (pd.DataFrame): DataFrame già filtrato per una scadenza.
-        spot_price (float): Prezzo spot di riferimento.
-
-    Returns:
-        dict: Un dizionario contenente le metriche GEX.
     """
     
-    # Aggrega GEX per Strike (logica da Cella 13)
+    # Aggrega GEX per Strike
     df_gex_strike = df_selected_expiry.groupby('Strike')['GEX_Signed'].sum().reset_index()
     df_gex_strike.rename(columns={'GEX_Signed': 'Net_GEX'}, inplace=True)
 
     # 1. Calcola GEX Netto Totale
     total_net_gex = df_gex_strike['Net_GEX'].sum()
     
-    # 2. Calcola Gamma Switch Point (Logica Cella 13)
+    # 2. Calcola Gamma Switch Point
     gamma_switch_local = None
     spot_delta = None
     
@@ -42,20 +37,17 @@ def calculate_gex_metrics(df_selected_expiry, spot_price):
                 
                 if not ultimo_neg_candidates.empty:
                     ultimo_neg = ultimo_neg_candidates.iloc[-1]
-                    
                     x0, y0 = ultimo_neg['Strike'], ultimo_neg['Net_GEX']
                     x1, y1 = primo_pos['Strike'], primo_pos['Net_GEX']
-                    
-                    # Interpolazione
                     gamma_switch_local = x0 - (y0 * (x1 - x0) / (y1 - y0))
                     spot_delta = spot_price - gamma_switch_local
                     
     except Exception as e:
         print(f"[Errore Calcolo Switch GEX]: {e}")
-        pass # Lascia i valori None
+        pass 
 
     return {
-        'df_gex_profile': df_gex_strike, # Dataframe per il grafico
+        'df_gex_profile': df_gex_strike,
         'total_net_gex': total_net_gex,
         'gamma_switch_point': gamma_switch_local,
         'spot_switch_delta': spot_delta
@@ -64,17 +56,9 @@ def calculate_gex_metrics(df_selected_expiry, spot_price):
 def calculate_oi_walls(df_selected_expiry, spot_price):
     """
     Calcola i Put/Call Walls per una *singola* scadenza.
-    Usa la logica S/R "rilevante" (vicino allo spot).
-
-    Args:
-        df_selected_expiry (pd.DataFrame): DataFrame già filtrato per una scadenza.
-        spot_price (float): Prezzo spot di riferimento.
-
-    Returns:
-        dict: Un dizionario contenente le metriche OI.
     """
     
-    # Filtra per range di rilevanza (Logica Cella 13)
+    # Filtra per range di rilevanza
     range_lower = spot_price * 0.75
     range_upper = spot_price * 1.25
     
@@ -115,9 +99,112 @@ def calculate_oi_walls(df_selected_expiry, spot_price):
     df_oi_profile['Puts_OI_Neg'] = df_oi_profile['Puts_OI'] * -1.0
 
     return {
-        'df_oi_profile': df_oi_profile, # Dataframe per il grafico
+        'df_oi_profile': df_oi_profile,
         'put_wall_strike': put_wall_strike,
         'put_wall_oi': max_put_oi,
         'call_wall_strike': call_wall_strike,
         'call_wall_oi': max_call_oi
     }
+
+# -----------------------------------------------------------------------------
+# NUOVE FUNZIONI (PER TAB STATISTICAL MODELS)
+# -----------------------------------------------------------------------------
+
+def calculate_max_pain(df_selected_expiry):
+    """
+    Calcola lo strike "Max Pain" per la scadenza selezionata.
+    (Come da Sezione 4.1 del documento di progetto)
+    """
+    
+    strikes = sorted(df_selected_expiry['Strike'].unique())
+    
+    # Separa Calls e Puts per efficienza
+    calls_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Call'].set_index('Strike')['OI']
+    puts_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Put'].set_index('Strike')['OI']
+    
+    total_payout_list = []
+    
+    for expiry_price in strikes:
+        # Calcola il valore intrinseco per tutte le opzioni *se* scadesse a 'expiry_price'
+        
+        # Payout per le Calls (compratori)
+        call_intrinsic = (expiry_price - calls_oi.index).clip(lower=0)
+        call_payout = (call_intrinsic * calls_oi).sum()
+        
+        # Payout per le Puts (compratori)
+        put_intrinsic = (puts_oi.index - expiry_price).clip(lower=0)
+        put_payout = (put_intrinsic * puts_oi).sum()
+        
+        total_payout_list.append({
+            'Strike': expiry_price,
+            'Total_Payout': call_payout + put_payout
+        })
+
+    if not total_payout_list:
+        return None, pd.DataFrame() # Nessun dato
+
+    # Crea il DataFrame dei payout
+    df_payouts = pd.DataFrame(total_payout_list)
+    
+    # Trova lo strike con il payout MINIMO (Max Pain)
+    max_pain_strike = df_payouts.loc[df_payouts['Total_Payout'].idxmin()]['Strike']
+    
+    return max_pain_strike, df_payouts
+
+
+def calculate_pc_ratios(df_selected_expiry):
+    """
+    Calcola i Put/Call Ratios per OI e Volume.
+    """
+    
+    # 1. P/C Ratio (Open Interest)
+    total_put_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Put']['OI'].sum()
+    total_call_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Call']['OI'].sum()
+    
+    pc_oi_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else np.nan
+    
+    # 2. P/C Ratio (Volume)
+    total_put_vol = df_selected_expiry[df_selected_expiry['Type'] == 'Put']['Vol'].sum()
+    total_call_vol = df_selected_expiry[df_selected_expiry['Type'] == 'Call']['Vol'].sum()
+    
+    pc_vol_ratio = total_put_vol / total_call_vol if total_call_vol > 0 else np.nan
+    
+    return {
+        'pc_oi_ratio': pc_oi_ratio,
+        'pc_vol_ratio': pc_vol_ratio
+    }
+
+def calculate_expected_move(df_selected_expiry, spot_price):
+    """
+    Calcola il movimento atteso (Expected Move) basato sulla IV ATM.
+    (Come da Sezione 4.4 del documento di progetto)
+    """
+    
+    try:
+        # 1. Trova lo strike ATM
+        atm_strike = (df_selected_expiry['Strike'] - spot_price).abs().idxmin()
+        atm_strike_val = df_selected_expiry.loc[atm_strike]['Strike']
+        
+        # 2. Estrai IV e DTE
+        df_atm = df_selected_expiry[df_selected_expiry['Strike'] == atm_strike_val]
+        iv_atm = df_atm['IV'].mean() # Media IV di Call e Put ATM
+        dte_years = df_atm['DTE_Years'].iloc[0]
+        
+        if dte_years <= 0: # Evita radice di zero per 0DTE
+             dte_years = 1 / 365.25 
+
+        # 3. Calcola Movimento
+        # Formula: Move = Spot * IV * sqrt(DTE_in_Anni)
+        move = spot_price * iv_atm * np.sqrt(dte_years)
+        
+        return {
+            'move': move,
+            'upper_band': spot_price + move,
+            'lower_band': spot_price - move,
+            'iv_atm': iv_atm,
+            'dte_years': dte_years
+        }
+        
+    except Exception as e:
+        print(f"[Errore Calcolo Expected Move]: {e}")
+        return {'move': None, 'upper_band': None, 'lower_band': None, 'iv_atm': None, 'dte_years': None}
