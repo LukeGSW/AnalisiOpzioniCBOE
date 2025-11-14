@@ -1,8 +1,7 @@
 # File: data_module.py
 #
 # Modulo per il caricamento, parsing e preprocessing dei dati CBOE.
-# Contiene la logica delle Celle 3, 4 e 5.
-# Come da Sezione 3.1 del documento di progettazione.
+# [CORRETTO] Risolto SyntaxError nel dizionario 'italian_to_english_months'.
 # -----------------------------------------------------------------------------
 
 import pandas as pd
@@ -96,12 +95,16 @@ def parse_cboe_csv(uploaded_file):
         # --- 3. Preprocessing e Feature Engineering (Logica Cella 4) ---
         df_processed = df_options_clean.copy()
         
+        # --- [INIZIO CORREZIONE] ---
         # Dizionario traduzione (robusto, Cella 4 Corretta)
         italian_to_english_months = {
-            'gennaio': 'January', 'febbraio': 'February', 'marzo': 'March', p'aprile': 'April', 'maggio': 'May', 'giugno': 'June', 'luglio': 'July', 
+            'gennaio': 'January', 'febbraio': 'February', 'marzo': 'March', 
+            'aprile': 'April', # Rimossa la 'p'
+            'maggio': 'May', 'giugno': 'June', 'luglio': 'July', 
             'agosto': 'August', 'settembre': 'September', 'ottobre': 'October', 
             'novembre': 'November', 'dicembre': 'December'
         }
+        # --- [FINE CORREZIONE] ---
         
         # Calcola data di analisi
         analysis_date_str = data_timestamp_extracted.split(' alle')[0]
@@ -124,20 +127,15 @@ def parse_cboe_csv(uploaded_file):
         df_processed = df_processed[df_processed['DTE_Days'] >= 0].copy()
 
         # --- 4. Calcolo GEX Iniziale (Logica Cella 5) ---
-        # Calcoliamo GEX qui e lo aggiungiamo al DataFrame processato
-        # Questo semplificherà i calcoli successivi
-        
         CONTRACT_MULTIPLIER = 100.0
         SPOT = spot_price_extracted
         
-        # GEX Nozionale
         df_processed['GEX_Notional'] = df_processed['Gamma'] * \
                                          df_processed['OI'] * \
                                          CONTRACT_MULTIPLIER * \
                                          (SPOT / 100.0) * \
                                          SPOT
         
-        # GEX Firmato (Calls +, Puts -) [cite: 5]
         df_processed['GEX_Signed'] = np.where(
             df_processed['Type'] == 'Call',
             df_processed['GEX_Notional'],      
