@@ -1,7 +1,7 @@
 # File: app.py
 #
 # File principale dell'applicazione Streamlit SPX Analyzer.
-# Gestisce l'UI, l'upload dei file e orchestra i moduli.
+# [AGGIORNATO] Ora popola i tab con calcoli e grafici.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -12,17 +12,21 @@ import datetime as dt
 
 # --- Importa i nostri moduli custom ---
 from data_module import parse_cboe_csv
-# (Più avanti importeremo anche calculations_module e visualization_module)
+from calculations_module import calculate_gex_metrics, calculate_oi_walls
+from visualization_module import (
+    create_gex_profile_chart, 
+    create_oi_profile_chart, 
+    create_volatility_surface_3d
+)
 
 # -----------------------------------------------------------------------------
 # 1. IMPOSTAZIONE PAGINA E TEMA
 # -----------------------------------------------------------------------------
 
-# set_page_config deve essere il primo comando Streamlit
 st.set_page_config(
     page_title="Kriterion Quant - SPX Analyzer",
     page_icon="📊",
-    layout="wide",  # Usa l'intero schermo
+    layout="wide",
     initial_sidebar_state="collapsed"
 )
 
@@ -44,6 +48,13 @@ st.markdown("""
     .stSelectbox > div > div:hover {
         border-color: #10b981;
     }
+    /* Stile per le 'Metrics Cards' (st.metric) */
+    div[data-testid="stMetric"] {
+        background-color: #111827; /* Colore plot_bgcolor */
+        border: 1px solid #1f2937; /* Colore griglia */
+        border-radius: 8px;
+        padding: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,17 +66,17 @@ st.markdown(f"Powered by **Kriterion Quant**") # Branding (Sez 5.3)
 # 2. LOGICA DI CARICAMENTO E CACHING DEI DATI
 # -----------------------------------------------------------------------------
 
-# Usiamo @st.cache_data per assicurarci che il parsing avvenga
-# SOLO una volta per file, e non ad ogni interazione dell'utente.
 @st.cache_data
 def load_data(uploaded_file):
-    """
-    Funzione wrapper (cache) per il nostro modulo di parsing.
-    """
-    df_processed, spot_price, data_timestamp = parse_cboe_csv(uploaded_file)
-    if df_processed is None:
-        return None, None, None # Fallimento
-    return df_processed, spot_price, data_timestamp
+    """Funzione wrapper (cache) per il nostro modulo di parsing."""
+    try:
+        df_processed, spot_price, data_timestamp = parse_cboe_csv(uploaded_file)
+        if df_processed is None:
+            return None, None, None
+        return df_processed, spot_price, data_timestamp
+    except Exception as e:
+        st.error(f"Errore irreversibile durante il parsing: {e}")
+        return None, None, None
 
 # --- Widget File Uploader ---
 uploaded_file = st.file_uploader(
@@ -79,7 +90,6 @@ spot_price = None
 data_timestamp = None
 
 if uploaded_file is not None:
-    # Se un file è caricato, esegui la funzione cachata
     df_processed, spot_price, data_timestamp = load_data(uploaded_file)
 else:
     st.info("In attesa del caricamento del file CSV...")
@@ -90,84 +100,122 @@ else:
 
 if df_processed is not None and spot_price is not None:
     
-    st.success(f"File processato. Spot: **{spot_price:.2f}** | Timestamp: {data_timestamp}")
-    
     # --- 3.1. Barra dei Controlli (Selettore Scadenza) ---
-    # Come da Sezione 3.3 e 5.2
-    
-    # Estrai scadenze uniche
     unique_expirations = sorted(df_processed['Expiration Date'].unique())
-    
-    # Crea mappa {Label: Valore} (Logica Cella 10 Corretta)
-    expiry_options_map = {}
-    for date in unique_expirations:
-        label = date.strftime('%Y-%m-%d (%a)')
-        expiry_options_map[label] = date
-        
-    # Trova default (Max OI)
+    expiry_options_map = {
+        date.strftime('%Y-%m-%d (%a)'): date for date in unique_expirations
+    }
     df_expiry_oi = df_processed.groupby('Expiration Date')['OI'].sum()
     default_expiry_label = df_expiry_oi.idxmax().strftime('%Y-%m-%d (%a)')
     
-    # Crea il Selettore (Selectbox)
     selected_expiry_label = st.selectbox(
         'Seleziona la Scadenza:',
         options=expiry_options_map.keys(),
-        index=list(expiry_options_map.keys()).index(default_expiry_label), # Imposta default
-        key='expiry_selector'
+        index=list(expiry_options_map.keys()).index(default_expiry_label)
     )
     
-    # Ottieni il valore Timestamp (il valore reale, non la label)
     selected_expiry_date = expiry_options_map[selected_expiry_label]
     
-    st.markdown(f"### Analisi per Scadenza: {selected_expiry_label}")
-    
-    # --- 3.2. Architettura Tab (Sezione 5.1) ---
-    
-    # Filtra il DataFrame per la *sola* scadenza selezionata
-    # Questo è il DataFrame che tutti i moduli useranno
+    # --- 3.2. Filtra Dati per Scadenza ---
     df_selected_expiry = df_processed[
         df_processed['Expiration Date'] == selected_expiry_date
     ].copy()
 
-    # Creazione dei Tab
+    # --- 3.3. Architettura Tab (Sezione 5.1) ---
     tab_gex, tab_oi, tab_vol, tab_flow, tab_stats, tab_risk, tab_summary = st.tabs([
-        '📊 Gamma Analysis',
-        '🎯 Support/Resistance', 
-        '📈 Volatility Surface',
-        '💹 Flow Analysis',
-        '📉 Statistical Models',
-        '⚠️ Risk Scenarios',
-        '📋 Summary Dashboard'
+        '📊 Gamma Analysis', '🎯 Support/Resistance', '📈 Volatility Surface',
+        '💹 Flow Analysis', '📉 Statistical Models', '⚠️ Risk Scenarios', '📋 Summary Dashboard'
     ])
 
-    # --- Riempimento dei Tab (per ora, placeholder) ---
-    
+    # -----------------------------------------------------------------
+    # POPOLAMENTO TAB 1: GAMMA ANALYSIS (Sez 5.2)
+    # -----------------------------------------------------------------
     with tab_gex:
-        st.header("Analisi Gamma Exposure (GEX)")
-        st.write("Prossimo passo: Creare `calculations_module.py` e `visualization_module.py` per popolare questo tab.")
-        st.dataframe(df_selected_expiry.head()) # Mostra un'anteprima
-
-    with tab_oi:
-        st.header("Analisi Supporti e Resistenze (OI)")
-        st.write("Questo tab mostrerà il grafico OI bidirezionale.")
-
-    with tab_vol:
-        st.header("Superficie di Volatilità")
-        st.write("Questo tab mostrerà il grafico 3D della volatilità.")
+        st.header(f"Analisi Gamma (GEX) per {selected_expiry_label}")
         
-    # Gli altri tab (come da progetto)
+        # 1. Calcola Metriche
+        gex_metrics = calculate_gex_metrics(df_selected_expiry, spot_price)
+        
+        # 2. Mostra KPI (Metrics Cards - Sez 5.2, Row 3)
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            label="Net GEX (per questa scadenza)",
+            value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B"
+        )
+        col2.metric(
+            label="Gamma Switch Point (GEX=0)",
+            value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] else "N/A"
+        )
+        col3.metric(
+            label="Spot-Switch Delta",
+            value=f"{gex_metrics['spot_switch_delta']:.2f}" if gex_metrics['spot_switch_delta'] else "N/A"
+        )
+        
+        # 3. Mostra Grafico (Sez 5.2, Row 1)
+        fig_gex = create_gex_profile_chart(
+            df_gex_profile=gex_metrics['df_gex_profile'],
+            spot_price=spot_price,
+            gamma_switch_point=gex_metrics['gamma_switch_point'],
+            expiry_label=selected_expiry_label
+        )
+        st.plotly_chart(fig_gex, use_container_width=True)
+
+    # -----------------------------------------------------------------
+    # POPOLAMENTO TAB 2: SUPPORT/RESISTANCE (Sez 5.2)
+    # -----------------------------------------------------------------
+    with tab_oi:
+        st.header(f"Supporti e Resistenze (OI) per {selected_expiry_label}")
+        
+        # 1. Calcola Metriche
+        oi_metrics = calculate_oi_walls(df_selected_expiry, spot_price)
+        
+        # 2. Mostra KPI (Metrics Cards - Sez 5.2)
+        col1, col2 = st.columns(2)
+        col1.metric(
+            label="🛡️ Put Wall (Supporto)",
+            value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A",
+            help=f"OI: {oi_metrics['put_wall_oi']:,.0f}"
+        )
+        col2.metric(
+            label="🛑 Call Wall (Resistenza)",
+            value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A",
+            help=f"OI: {oi_metrics['call_wall_oi']:,.0f}"
+        )
+        
+        # 3. Mostra Grafico (Sez 5.2)
+        fig_oi = create_oi_profile_chart(
+            df_oi_profile=oi_metrics['df_oi_profile'],
+            spot_price=spot_price,
+            expiry_label=selected_expiry_label
+        )
+        st.plotly_chart(fig_oi, use_container_width=True)
+
+    # -----------------------------------------------------------------
+    # POPOLAMENTO TAB 3: VOLATILITY SURFACE (Sez 5.2)
+    # -----------------------------------------------------------------
+    with tab_vol:
+        st.header("Superficie di Volatilità (Tutte le Scadenze)")
+        
+        with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
+            # Nota: questo usa l'intero df_processed, non solo quello filtrato
+            fig_vol = create_volatility_surface_3d(df_processed)
+            st.plotly_chart(fig_vol, use_container_width=True)
+
+    # -----------------------------------------------------------------
+    # PLACEHOLDER PER GLI ALTRI TAB
+    # -----------------------------------------------------------------
     with tab_flow:
         st.header("Flow Analysis (Fase 2)")
-        st.write("Come da Sezione 4.2 del progetto.")
+        st.info("Come da Sezione 4.2 del progetto (Large trades, UOA, Delta-weighted metrics).")
 
     with tab_stats:
         st.header("Statistical Models (Fase 2)")
-        st.write("Come da Sezione 4.4 del progetto.")
+        st.info("Come da Sezione 4.4 del progetto (Regime Detection, Probability Models).")
 
     with tab_risk:
         st.header("Risk Scenarios (Fase 2)")
-        st.write("Come da Sezione 5.2, Tab 6.")
+        st.info("Come da Sezione 5.2, Tab 6 (Stress Test, VaR, Greeks Sensitivities).")
 
     with tab_summary:
         st.header("Executive Summary (Fase 2)")
-        st.write("Come da Sezione 5.2, Tab 7.")
+        st.info("Come da Sezione 5.2, Tab 7 (Dashboard riassuntivo dei KPI).")
