@@ -1,9 +1,9 @@
 # File: visualization_module.py
 #
-# [AGGIORNATO]
-# 1. Aggiunta 'height=600' ai grafici 2D (GEX, OI) per renderli più leggibili.
-# 2. Aggiunta 'height=800' al grafico 3D (Vol Surface) per renderlo
-#    utilizzabile e non "schiacciato".
+# [AGGIORNATO 2]
+# 1. Altezza grafici 2D (GEX, OI) portata a 700px.
+# 2. Altezza grafico 3D (Vol Surface) portata a 900px per
+#    massima leggibilità.
 # -----------------------------------------------------------------------------
 
 import plotly.graph_objects as go
@@ -84,7 +84,7 @@ def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, exp
         title=f"Profilo GEX (Scadenza: {expiry_label})",
         xaxis_title="Strike Price",
         yaxis_title="Net GEX (Notional $)",
-        height=600  # <-- [MODIFICA] Aumenta altezza per leggibilità
+        height=700  # <-- [MODIFICA] Aumentata altezza
     )
     return fig
 
@@ -119,7 +119,7 @@ def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
         xaxis_title="Strike Price",
         yaxis_title="Open Interest (Calls: Positivo, Puts: Negativo)",
         barmode='relative',
-        height=600  # <-- [MODIFICA] Aumenta altezza per leggibilità
+        height=700  # <-- [MODIFICA] Aumentata altezza
     )
     return fig
 
@@ -139,7 +139,7 @@ def create_volatility_surface_3d(df_all_processed):
         df_surf = pd.concat([df_surf_puts, df_surf_calls])
         df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 1.50)]
 
-        if len(df_surf) < 20: # Aumentato il minimo
+        if len(df_surf) < 20: 
              raise Exception("Dati OTM insufficienti per l'interpolazione.")
         
         # Interpolazione
@@ -176,7 +176,7 @@ def create_volatility_surface_3d(df_all_processed):
                 bgcolor=KRITERION_THEME['paper_bgcolor'],
             ),
             scene_camera_eye=dict(x=1.8, y=-1.8, z=0.8),
-            height=800  # <-- [MODIFICA] Altezza fissa per il 3D
+            height=900  # <-- [MODIFICA] Aumentata altezza
         )
         return fig
 
@@ -184,5 +184,5 @@ def create_volatility_surface_3d(df_all_processed):
         print(f"[ERRORE in create_volatility_surface_3d]: {e}")
         fig = go.Figure()
         fig = apply_kriterion_theme(fig)
-        fig.update_layout(title=f"Errore nella creazione della superficie 3D: {e}", height=800)
+        fig.update_layout(title=f"Errore nella creazione della superficie 3D: {e}", height=900)
         return fig
