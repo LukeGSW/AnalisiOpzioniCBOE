@@ -1,10 +1,9 @@
 # File: app.py
 #
-# [AGGIORNATO DEFINITIVO]
-# 1. Aggiunto il tab "Statistical Models" con Max Pain, Expected Move, P/C Ratios.
-# 2. Modificato il "Summary Dashboard" per un layout verticale dei grafici.
-# 3. Aggiunto il grafico dei Volumi al Summary e al tab "Support/Resistance".
-# 4. Modificati i nomi dei tab per includere quello nuovo.
+# [AGGIORNATO]
+# 1. Modificato "Summary Dashboard" per mostrare i 3 grafici
+#    in 3 colonne verticali affiancate (come richiesto).
+# 2. Mantenuti tutti gli altri tab (GEX, OI/Vol, Stats, Surface).
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -18,17 +17,17 @@ from data_module import parse_cboe_csv
 from calculations_module import (
     calculate_gex_metrics, 
     calculate_oi_walls,
-    calculate_max_pain,          # <-- Nuovo
-    calculate_pc_ratios,       # <-- Nuovo
-    calculate_expected_move,   # <-- Nuovo
-    calculate_volume_profile   # <-- Nuovo
+    calculate_max_pain,
+    calculate_pc_ratios,
+    calculate_expected_move,
+    calculate_volume_profile
 )
 from visualization_module import (
     create_gex_profile_chart, 
     create_oi_profile_chart, 
     create_volatility_surface_3d,
-    create_volume_profile_chart, # <-- Nuovo
-    create_max_pain_chart        # <-- Nuovo
+    create_volume_profile_chart,
+    create_max_pain_chart
 )
 
 # -----------------------------------------------------------------------------
@@ -121,17 +120,17 @@ if df_processed is not None and spot_price is not None:
     with st.spinner("Calcolo metriche per la scadenza..."):
         gex_metrics = calculate_gex_metrics(df_selected_expiry, spot_price)
         oi_metrics = calculate_oi_walls(df_selected_expiry, spot_price)
-        vol_metrics = calculate_volume_profile(df_selected_expiry, spot_price) # <-- Nuovo
-        max_pain_strike, df_payouts = calculate_max_pain(df_selected_expiry)  # <-- Nuovo
-        pc_ratios = calculate_pc_ratios(df_selected_expiry)                  # <-- Nuovo
-        expected_move = calculate_expected_move(df_selected_expiry, spot_price) # <-- Nuovo
+        vol_metrics = calculate_volume_profile(df_selected_expiry, spot_price)
+        max_pain_strike, df_payouts = calculate_max_pain(df_selected_expiry)
+        pc_ratios = calculate_pc_ratios(df_selected_expiry)
+        expected_move = calculate_expected_move(df_selected_expiry, spot_price)
     
-    # --- 3.4. Architettura Tab (Aggiornata) ---
+    # --- 3.4. Architettura Tab ---
     tab_summary, tab_gex, tab_oi_vol, tab_stats, tab_vol_surf = st.tabs([
         '📋 Summary Dashboard',
         '📊 Gamma Analysis',
-        '🎯 Support/Resistance (OI & Vol)', # <-- Tab rinominato
-        '📉 Statistical Models',           # <-- Nuovo Tab
+        '🎯 Support/Resistance (OI & Vol)',
+        '📉 Statistical Models',
         '📈 Volatility Surface'
     ])
 
@@ -144,7 +143,7 @@ if df_processed is not None and spot_price is not None:
         # Key Metrics Grid
         st.subheader("Key Metrics Grid (per la scadenza selezionata)")
         
-        col1, col2, col3, col4, col5 = st.columns(5) # Aggiunta colonna
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric(label="Spot Price", value=f"{spot_price:.2f}")
         col2.metric(
             label="Net GEX (Scadenza)",
@@ -157,28 +156,32 @@ if df_processed is not None and spot_price is not None:
         col5.metric(label="📍 Max Pain", value=f"{max_pain_strike:.0f}" if max_pain_strike else "N/A")
         
         st.divider()
-        st.subheader("Mini Charts Dashboard")
+        st.subheader("Charts Dashboard (GEX, OI, Volume)")
         
-        # --- [MODIFICA] Layout Verticale (rimosse le colonne) ---
+        # --- [MODIFICA] Layout a 3 colonne (affiancato) ---
+        col1, col2, col3 = st.columns(3)
         
-        st.markdown("#### Profilo GEX (per Scadenza)")
-        fig_gex = create_gex_profile_chart(
-            gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
-        )
-        st.plotly_chart(fig_gex, use_container_width=True, key="summary_gex_chart")
+        with col1:
+            st.markdown("#### Profilo GEX")
+            fig_gex = create_gex_profile_chart(
+                gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
+            )
+            st.plotly_chart(fig_gex, use_container_width=True, key="summary_gex_chart")
 
-        st.markdown("#### Distribuzione Open Interest (per Scadenza)")
-        fig_oi = create_oi_profile_chart(
-            oi_metrics['df_oi_profile'], spot_price, selected_expiry_label
-        )
-        st.plotly_chart(fig_oi, use_container_width=True, key="summary_oi_chart")
+        with col2:
+            st.markdown("#### Distribuzione OI")
+            fig_oi = create_oi_profile_chart(
+                oi_metrics['df_oi_profile'], spot_price, selected_expiry_label
+            )
+            st.plotly_chart(fig_oi, use_container_width=True, key="summary_oi_chart")
         
-        # --- [NUOVO] Aggiunta Grafico Volumi al Summary ---
-        st.markdown("#### Distribuzione Volumi (per Scadenza)")
-        fig_vol = create_volume_profile_chart(
-            vol_metrics['df_vol_profile'], spot_price, selected_expiry_label
-        )
-        st.plotly_chart(fig_vol, use_container_width=True, key="summary_vol_chart")
+        with col3:
+            st.markdown("#### Distribuzione Volumi")
+            fig_vol = create_volume_profile_chart(
+                vol_metrics['df_vol_profile'], spot_price, selected_expiry_label
+            )
+            st.plotly_chart(fig_vol, use_container_width=True, key="summary_vol_chart")
+        # --- [FINE MODIFICA] ---
 
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 1: GAMMA ANALYSIS
@@ -189,7 +192,7 @@ if df_processed is not None and spot_price is not None:
         col1.metric(label="Net GEX", value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B")
         col2.metric(label="Gamma Switch Point", value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] else "N/A")
         col3.metric(label="Spot-Switch Delta", value=f"{gex_metrics['spot_switch_delta']:.2f}" if gex_metrics['spot_switch_delta'] else "N/A")
-        st.plotly_chart(fig_gex, use_container_width=True, key="gex_tab_chart") # Riuso fig_gex
+        st.plotly_chart(fig_gex, use_container_width=True, key="gex_tab_chart")
 
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 2: SUPPORT/RESISTANCE (OI & Vol)
@@ -202,15 +205,14 @@ if df_processed is not None and spot_price is not None:
         col1.metric(label="🛡️ Put Wall", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A", help=f"OI: {oi_metrics['put_wall_oi']:,.0f}")
         col2.metric(label="🛑 Call Wall", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A", help=f"OI: {oi_metrics['call_wall_oi']:,.0f}")
         
-        st.plotly_chart(fig_oi, use_container_width=True, key="oi_tab_chart") # Riuso fig_oi
+        st.plotly_chart(fig_oi, use_container_width=True, key="oi_tab_chart")
         
         st.divider()
-        
         st.subheader("Metriche Volumi (Attività di Giornata)")
-        st.plotly_chart(fig_vol, use_container_width=True, key="vol_tab_chart") # Riuso fig_vol
+        st.plotly_chart(fig_vol, use_container_width=True, key="vol_tab_chart")
 
     # -----------------------------------------------------------------
-    # POPOLAMENTO TAB 3: STATISTICAL MODELS (Nuovo)
+    # POPOLAMENTO TAB 3: STATISTICAL MODELS
     # -----------------------------------------------------------------
     with tab_stats:
         st.header(f"Modelli Statistici per {selected_expiry_label}")
@@ -232,7 +234,6 @@ if df_processed is not None and spot_price is not None:
             st.warning("Impossibile calcolare l'Expected Move (dati IV ATM mancanti).")
 
         st.divider()
-        
         st.subheader(f"Grafico Max Pain (Payout Totale a Scadenza)")
         fig_max_pain = create_max_pain_chart(df_payouts, max_pain_strike, selected_expiry_label)
         st.plotly_chart(fig_max_pain, use_container_width=True, key="max_pain_chart")
@@ -245,4 +246,4 @@ if df_processed is not None and spot_price is not None:
         
         with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
             fig_vol_surf = create_volatility_surface_3d(df_processed)
-            st.plotly_chart(fig_vol_surf, key="vol_surface_chart") # Rimosso use_container_width
+            st.plotly_chart(fig_vol_surf, key="vol_surface_chart")
