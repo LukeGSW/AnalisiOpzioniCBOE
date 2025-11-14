@@ -1,9 +1,9 @@
 # File: calculations_module.py
 #
-# [CORRETTO]
-# 1. Risolto 'AttributeError' in 'calculate_max_pain'.
-# 2. Aggiunto '.to_numpy()' prima di '.clip(lower=0)'
-#    per convertire l'Index in un array NumPy.
+# [CORRETTO 2]
+# 1. Risolto 'TypeError' in 'calculate_max_pain'.
+# 2. Sostituito 'clip(lower=0)' (sintassi Pandas)
+#    con 'clip(min=0)' (sintassi NumPy).
 # -----------------------------------------------------------------------------
 
 import pandas as pd
@@ -92,11 +92,11 @@ def calculate_max_pain(df_selected_expiry):
         
         # --- [INIZIO CORREZIONE] ---
         # Payout per le Calls (compratori)
-        call_intrinsic = (expiry_price - calls_oi.index).to_numpy().clip(lower=0)
+        call_intrinsic = (expiry_price - calls_oi.index).to_numpy().clip(min=0)
         call_payout = (call_intrinsic * calls_oi).sum()
         
         # Payout per le Puts (compratori)
-        put_intrinsic = (puts_oi.index - expiry_price).to_numpy().clip(lower=0)
+        put_intrinsic = (puts_oi.index - expiry_price).to_numpy().clip(min=0)
         put_payout = (put_intrinsic * puts_oi).sum()
         # --- [FINE CORREZIONE] ---
         
