@@ -1,9 +1,8 @@
 # File: app.py
 #
 # [AGGIORNATO]
-# 1. Modificato "Summary Dashboard" per mostrare i 3 grafici
-#    in 3 colonne verticali affiancate (come richiesto).
-# 2. Mantenuti tutti gli altri tab (GEX, OI/Vol, Stats, Surface).
+# 1. Aggiunto il calcolo del "Drift" (Activity Ratio)
+# 2. Aggiunto il grafico del "Drift" al tab "Support/Resistance".
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -20,40 +19,36 @@ from calculations_module import (
     calculate_max_pain,
     calculate_pc_ratios,
     calculate_expected_move,
-    calculate_volume_profile
+    calculate_volume_profile,
+    calculate_activity_ratio # <-- Nuovo
 )
 from visualization_module import (
     create_gex_profile_chart, 
     create_oi_profile_chart, 
     create_volatility_surface_3d,
     create_volume_profile_chart,
-    create_max_pain_chart
+    create_max_pain_chart,
+    create_activity_ratio_chart # <-- Nuovo
 )
 
 # -----------------------------------------------------------------------------
 # 1. IMPOSTAZIONE PAGINA E TEMA
 # -----------------------------------------------------------------------------
-
 st.set_page_config(
     page_title="Kriterion Quant - SPX Analyzer",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# Applica il tema scuro professionale (Sez 5.3)
 st.markdown("""
 <style>
     .main { background-color: #0e1117; }
     body, .stApp, .stTextInput > div > div > input, .stSelectbox > div > div { 
-        font-family: 'Inter', sans-serif; 
-        color: #e5e7eb; 
+        font-family: 'Inter', sans-serif; color: #e5e7eb; 
     }
     div[data-testid="stMetric"] {
-        background-color: #111827; 
-        border: 1px solid #1f2937; 
-        border-radius: 8px;
-        padding: 10px;
+        background-color: #111827; border: 1px solid #1f2937; 
+        border-radius: 8px; padding: 10px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -69,22 +64,14 @@ st.markdown(f"Powered by **Kriterion Quant**")
 def load_data(uploaded_file):
     try:
         df_processed, spot_price, data_timestamp = parse_cboe_csv(uploaded_file)
-        if df_processed is None:
-            return None, None, None
+        if df_processed is None: return None, None, None
         return df_processed, spot_price, data_timestamp
     except Exception as e:
         st.error(f"Errore irreversibile durante il parsing: {e}")
         return None, None, None
 
-uploaded_file = st.file_uploader(
-    "Carica il file CSV della CBOE Options Chain",
-    type=["csv"]
-)
-
-df_processed = None
-spot_price = None
-data_timestamp = None
-
+uploaded_file = st.file_uploader("Carica il file CSV della CBOE Options Chain", type=["csv"])
+df_processed, spot_price, data_timestamp = (None, None, None)
 if uploaded_file is not None:
     df_processed, spot_price, data_timestamp = load_data(uploaded_file)
 else:
@@ -97,41 +84,33 @@ if df_processed is not None and spot_price is not None:
     
     # --- 3.1. Barra dei Controlli (Selettore Scadenza) ---
     unique_expirations = sorted(df_processed['Expiration Date'].unique())
-    expiry_options_map = {
-        date.strftime('%Y-%m-%d (%a)'): date for date in unique_expirations
-    }
+    expiry_options_map = {date.strftime('%Y-%m-%d (%a)'): date for date in unique_expirations}
     df_expiry_oi = df_processed.groupby('Expiration Date')['OI'].sum()
     default_expiry_label = df_expiry_oi.idxmax().strftime('%Y-%m-%d (%a)')
     
     selected_expiry_label = st.selectbox(
-        'Seleziona la Scadenza:',
-        options=expiry_options_map.keys(),
+        'Seleziona la Scadenza:', options=expiry_options_map.keys(),
         index=list(expiry_options_map.keys()).index(default_expiry_label)
     )
-    
     selected_expiry_date = expiry_options_map[selected_expiry_label]
     
     # --- 3.2. Filtra Dati per Scadenza ---
-    df_selected_expiry = df_processed[
-        df_processed['Expiration Date'] == selected_expiry_date
-    ].copy()
+    df_selected_expiry = df_processed[df_processed['Expiration Date'] == selected_expiry_date].copy()
 
     # --- 3.3. Calcola TUTTI i KPI (una sola volta) ---
     with st.spinner("Calcolo metriche per la scadenza..."):
         gex_metrics = calculate_gex_metrics(df_selected_expiry, spot_price)
         oi_metrics = calculate_oi_walls(df_selected_expiry, spot_price)
         vol_metrics = calculate_volume_profile(df_selected_expiry, spot_price)
+        activity_metrics = calculate_activity_ratio(df_selected_expiry, spot_price) # <-- Nuovo
         max_pain_strike, df_payouts = calculate_max_pain(df_selected_expiry)
         pc_ratios = calculate_pc_ratios(df_selected_expiry)
         expected_move = calculate_expected_move(df_selected_expiry, spot_price)
     
     # --- 3.4. Architettura Tab ---
     tab_summary, tab_gex, tab_oi_vol, tab_stats, tab_vol_surf = st.tabs([
-        '📋 Summary Dashboard',
-        '📊 Gamma Analysis',
-        '🎯 Support/Resistance (OI & Vol)',
-        '📉 Statistical Models',
-        '📈 Volatility Surface'
+        '📋 Summary Dashboard', '📊 Gamma Analysis',
+        '🎯 Support/Resistance (OI & Vol)', '📉 Statistical Models', '📈 Volatility Surface'
     ])
 
     # -----------------------------------------------------------------
@@ -142,15 +121,10 @@ if df_processed is not None and spot_price is not None:
         
         # Key Metrics Grid
         st.subheader("Key Metrics Grid (per la scadenza selezionata)")
-        
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric(label="Spot Price", value=f"{spot_price:.2f}")
-        col2.metric(
-            label="Net GEX (Scadenza)",
-            value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B",
-            delta="SHORT" if gex_metrics['total_net_gex'] < 0 else "LONG",
-            delta_color="inverse"
-        )
+        col2.metric(label="Net GEX (Scadenza)", value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B",
+                    delta="SHORT" if gex_metrics['total_net_gex'] < 0 else "LONG", delta_color="inverse")
         col3.metric(label="🛡️ Put Wall (Supporto)", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A")
         col4.metric(label="🛑 Call Wall (Resistenza)", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A")
         col5.metric(label="📍 Max Pain", value=f"{max_pain_strike:.0f}" if max_pain_strike else "N/A")
@@ -158,7 +132,7 @@ if df_processed is not None and spot_price is not None:
         st.divider()
         st.subheader("Charts Dashboard (GEX, OI, Volume)")
         
-        # --- [MODIFICA] Layout a 3 colonne (affiancato) ---
+        # Layout a 3 colonne
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -181,7 +155,6 @@ if df_processed is not None and spot_price is not None:
                 vol_metrics['df_vol_profile'], spot_price, selected_expiry_label
             )
             st.plotly_chart(fig_vol, use_container_width=True, key="summary_vol_chart")
-        # --- [FINE MODIFICA] ---
 
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 1: GAMMA ANALYSIS
@@ -204,13 +177,21 @@ if df_processed is not None and spot_price is not None:
         col1, col2 = st.columns(2)
         col1.metric(label="🛡️ Put Wall", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A", help=f"OI: {oi_metrics['put_wall_oi']:,.0f}")
         col2.metric(label="🛑 Call Wall", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A", help=f"OI: {oi_metrics['call_wall_oi']:,.0f}")
-        
         st.plotly_chart(fig_oi, use_container_width=True, key="oi_tab_chart")
         
         st.divider()
         st.subheader("Metriche Volumi (Attività di Giornata)")
         st.plotly_chart(fig_vol, use_container_width=True, key="vol_tab_chart")
-
+        
+        # --- [NUOVO] Grafico Drift Aggiunto al Tab ---
+        st.divider()
+        st.subheader("Analisi Drift (Rapporto Vol/OI)")
+        st.info("Questo grafico mostra gli strike 'caldi'. Un rapporto > 1.0 indica che il volume odierno ha superato l'intero Open Interest esistente, segnalando un'attività insolita e un potenziale 'drift' rispetto ai livelli di OI statici.")
+        fig_drift = create_activity_ratio_chart(
+            activity_metrics['df_activity_profile'], spot_price, selected_expiry_label
+        )
+        st.plotly_chart(fig_drift, use_container_width=True, key="drift_tab_chart")
+        
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 3: STATISTICAL MODELS
     # -----------------------------------------------------------------
@@ -243,7 +224,6 @@ if df_processed is not None and spot_price is not None:
     # -----------------------------------------------------------------
     with tab_vol_surf:
         st.header("Superficie di Volatilità (Tutte le Scadenze)")
-        
         with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
             fig_vol_surf = create_volatility_surface_3d(df_processed)
             st.plotly_chart(fig_vol_surf, key="vol_surface_chart")
