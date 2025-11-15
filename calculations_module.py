@@ -1,13 +1,15 @@
 # File: calculations_module.py
 #
-# [CORRETTO 2]
-# 1. Risolto 'TypeError' in 'calculate_max_pain'.
-# 2. Sostituito 'clip(lower=0)' (sintassi Pandas)
-#    con 'clip(min=0)' (sintassi NumPy).
+# [AGGIORNATO]
+# 1. Aggiunta la funzione 'calculate_activity_ratio'
+#    per il nuovo grafico di "Drift Analysis".
 # -----------------------------------------------------------------------------
 
 import pandas as pd
 import numpy as np
+
+# ... (tutte le funzioni precedenti: calculate_gex_metrics, 
+#      calculate_oi_walls, calculate_max_pain, etc. restano invariate) ...
 
 def calculate_gex_metrics(df_selected_expiry, spot_price):
     """Calcola le metriche GEX per una *singola* scadenza."""
@@ -71,98 +73,92 @@ def calculate_oi_walls(df_selected_expiry, spot_price):
         'put_wall_oi': max_put_oi, 'call_wall_strike': call_wall_strike, 'call_wall_oi': max_call_oi
     }
 
-# -----------------------------------------------------------------------------
-# FUNZIONI PER TAB STATISTICAL MODELS
-# -----------------------------------------------------------------------------
-
 def calculate_max_pain(df_selected_expiry):
-    """
-    Calcola lo strike "Max Pain" per la scadenza selezionata.
-    (Come da Sezione 4.1 del documento di progetto)
-    """
+    """Calcola lo strike "Max Pain" per la scadenza selezionata."""
     
     strikes = sorted(df_selected_expiry['Strike'].unique())
-    
     calls_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Call'].set_index('Strike')['OI']
     puts_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Put'].set_index('Strike')['OI']
-    
     total_payout_list = []
     
     for expiry_price in strikes:
-        
-        # --- [INIZIO CORREZIONE] ---
-        # Payout per le Calls (compratori)
         call_intrinsic = (expiry_price - calls_oi.index).to_numpy().clip(min=0)
         call_payout = (call_intrinsic * calls_oi).sum()
-        
-        # Payout per le Puts (compratori)
         put_intrinsic = (puts_oi.index - expiry_price).to_numpy().clip(min=0)
         put_payout = (put_intrinsic * puts_oi).sum()
-        # --- [FINE CORREZIONE] ---
-        
-        total_payout_list.append({
-            'Strike': expiry_price,
-            'Total_Payout': call_payout + put_payout
-        })
+        total_payout_list.append({'Strike': expiry_price, 'Total_Payout': call_payout + put_payout})
 
-    if not total_payout_list:
-        return None, pd.DataFrame() # Nessun dato
-
+    if not total_payout_list: return None, pd.DataFrame()
     df_payouts = pd.DataFrame(total_payout_list)
     max_pain_strike = df_payouts.loc[df_payouts['Total_Payout'].idxmin()]['Strike']
-    
     return max_pain_strike, df_payouts
 
-
 def calculate_pc_ratios(df_selected_expiry):
-    """
-    Calcola i Put/Call Ratios per OI e Volume.
-    """
+    """Calcola i Put/Call Ratios per OI e Volume."""
     total_put_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Put']['OI'].sum()
     total_call_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Call']['OI'].sum()
     pc_oi_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else np.nan
-    
     total_put_vol = df_selected_expiry[df_selected_expiry['Type'] == 'Put']['Vol'].sum()
     total_call_vol = df_selected_expiry[df_selected_expiry['Type'] == 'Call']['Vol'].sum()
     pc_vol_ratio = total_put_vol / total_call_vol if total_call_vol > 0 else np.nan
-    
     return {'pc_oi_ratio': pc_oi_ratio, 'pc_vol_ratio': pc_vol_ratio}
 
 def calculate_expected_move(df_selected_expiry, spot_price):
-    """
-    Calcola il movimento atteso (Expected Move) basato sulla IV ATM.
-    """
+    """Calcola il movimento atteso (Expected Move) basato sulla IV ATM."""
     try:
         atm_strike_index = (df_selected_expiry['Strike'] - spot_price).abs().idxmin()
         atm_strike_val = df_selected_expiry.loc[atm_strike_index]['Strike']
         df_atm = df_selected_expiry[df_selected_expiry['Strike'] == atm_strike_val]
         iv_atm = df_atm['IV'].mean()
         dte_years = df_atm['DTE_Years'].iloc[0]
-        
         if dte_years <= 0: dte_years = 1 / 365.25 
         move = spot_price * iv_atm * np.sqrt(dte_years)
-        
         return {'move': move, 'upper_band': spot_price + move, 'lower_band': spot_price - move, 'iv_atm': iv_atm}
     except Exception as e:
         print(f"[Errore Calcolo Expected Move]: {e}")
         return {'move': None, 'upper_band': None, 'lower_band': None, 'iv_atm': None}
 
 def calculate_volume_profile(df_selected_expiry, spot_price):
-    """
-    Prepara il DataFrame per il grafico bidirezionale dei Volumi.
-    """
+    """Prepara il DataFrame per il grafico bidirezionale dei Volumi."""
     range_lower = spot_price * 0.75
     range_upper = spot_price * 1.25
     df_vol_relevant = df_selected_expiry[
-        (df_selected_expiry['Strike'] >= range_lower) &
-        (df_selected_expiry['Strike'] <= range_upper)
+        (df_selected_expiry['Strike'] >= range_lower) & (df_selected_expiry['Strike'] <= range_upper)
     ]
-    
     vol_calls_grouped = df_vol_relevant[df_vol_relevant['Type'] == 'Call'].groupby('Strike')['Vol'].sum()
     vol_puts_grouped = df_vol_relevant[df_vol_relevant['Type'] == 'Put'].groupby('Strike')['Vol'].sum()
     df_vol_profile = pd.DataFrame({'Calls_Vol': vol_calls_grouped, 'Puts_Vol': vol_puts_grouped}).fillna(0).reset_index()
     df_vol_profile['Puts_Vol_Neg'] = df_vol_profile['Puts_Vol'] * -1.0
+    return {'df_vol_profile': df_vol_profile}
 
-    return {
-        'df_vol_profile': df_vol_profile
-    }
+# --- [NUOVA FUNZIONE] ---
+def calculate_activity_ratio(df_selected_expiry, spot_price):
+    """
+    Calcola il rapporto Vol/OI per identificare il "Drift".
+    """
+    range_lower = spot_price * 0.75
+    range_upper = spot_price * 1.25
+    df_relevant = df_selected_expiry[
+        (df_selected_expiry['Strike'] >= range_lower) &
+        (df_selected_expiry['Strike'] <= range_upper)
+    ]
+    
+    # Raggruppa per Strike e Tipo, sommando sia OI che Vol
+    df_grouped = df_relevant.groupby(['Strike', 'Type'])[['OI', 'Vol']].sum().unstack(fill_value=0)
+    
+    # Crea colonne separate
+    df_profile = pd.DataFrame(index=df_grouped.index)
+    df_profile['Call_OI'] = df_grouped[('OI', 'Call')]
+    df_profile['Call_Vol'] = df_grouped[('Vol', 'Call')]
+    df_profile['Put_OI'] = df_grouped[('OI', 'Put')]
+    df_profile['Put_Vol'] = df_grouped[('Vol', 'Put')]
+    
+    # Calcola il rapporto (usiamo OI+1 per evitare divisione per zero)
+    # Questo evidenzia gli strike con OI=0 e Vol > 0
+    df_profile['Call_Activity_Ratio'] = df_profile['Call_Vol'] / (df_profile['Call_OI'] + 1)
+    df_profile['Put_Activity_Ratio'] = df_profile['Put_Vol'] / (df_profile['Put_OI'] + 1)
+    
+    # Negativo per il grafico
+    df_profile['Put_Activity_Ratio_Neg'] = df_profile['Put_Activity_Ratio'] * -1.0
+    
+    return {'df_activity_profile': df_profile.reset_index()}
