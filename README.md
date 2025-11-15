@@ -1,5 +1,4 @@
 
------
 
 # Kriterion Quant - Analizzatore Chain Opzioni SPX
 
@@ -9,8 +8,8 @@ Questo strumento traduce un singolo file CSV in un'analisi interattiva completa,
 
 ## 📸 Anteprima Dashboard
 
-(Qui puoi inserire l'immagine `grafici.png` che mi hai mostrato)
-`![Anteprima Dashboard](grafici.png)`
+(Qui puoi inserire un'immagine aggiornata del tuo dashboard)
+`![Anteprima Dashboard](dashboard_preview.png)`
 
 -----
 
@@ -28,6 +27,7 @@ Questo strumento implementa diverse analisi chiave dal documento di progettazion
   * **Analisi Supporti/Resistenze (OI & Volumi)**:
       * Identificazione dei "Put Wall" (supporto) e "Call Wall" (resistenza) basati sul max OI rilevante.
       * Grafici a barre orizzontali bidirezionali per visualizzare il posizionamento (OI) e l'attività (Volume) per strike.
+      * **Analisi del Drift (Vol vs OI)**: Un grafico innovativo che mostra la "direzione" dell'attività odierna (Volumi) rispetto al posizionamento statico (OI), sintetizzato da una freccia di "drift" rialzista o ribassista.
   * **Modelli Statistici**:
       * Calcolo del **Max Pain** (Dolore Massimo) per la scadenza.
       * Calcolo dei **Put/Call Ratios** (sia per OI che per Volume) come indicatori di sentiment.
