@@ -1,8 +1,8 @@
 # File: app.py
 #
-# [AGGIORNATO]
-# 1. Aggiunto il calcolo del "Drift" (Activity Ratio)
-# 2. Aggiunto il grafico del "Drift" al tab "Support/Resistance".
+# [VERSIONE COMPLETA]
+# Contiene l'integrazione finale per il 'Drift Arrow Chart'
+# nel tab 'Support/Resistance'.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -20,7 +20,7 @@ from calculations_module import (
     calculate_pc_ratios,
     calculate_expected_move,
     calculate_volume_profile,
-    calculate_activity_ratio # <-- Nuovo
+    calculate_activity_ratio
 )
 from visualization_module import (
     create_gex_profile_chart, 
@@ -28,7 +28,8 @@ from visualization_module import (
     create_volatility_surface_3d,
     create_volume_profile_chart,
     create_max_pain_chart,
-    create_activity_ratio_chart # <-- Nuovo
+    create_activity_ratio_chart,
+    create_drift_arrow_chart # <-- Nuovo
 )
 
 # -----------------------------------------------------------------------------
@@ -102,7 +103,7 @@ if df_processed is not None and spot_price is not None:
         gex_metrics = calculate_gex_metrics(df_selected_expiry, spot_price)
         oi_metrics = calculate_oi_walls(df_selected_expiry, spot_price)
         vol_metrics = calculate_volume_profile(df_selected_expiry, spot_price)
-        activity_metrics = calculate_activity_ratio(df_selected_expiry, spot_price) # <-- Nuovo
+        activity_metrics = calculate_activity_ratio(df_selected_expiry, spot_price)
         max_pain_strike, df_payouts = calculate_max_pain(df_selected_expiry)
         pc_ratios = calculate_pc_ratios(df_selected_expiry)
         expected_move = calculate_expected_move(df_selected_expiry, spot_price)
@@ -119,7 +120,6 @@ if df_processed is not None and spot_price is not None:
     with tab_summary:
         st.header(f"Executive Summary per {selected_expiry_label}")
         
-        # Key Metrics Grid
         st.subheader("Key Metrics Grid (per la scadenza selezionata)")
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric(label="Spot Price", value=f"{spot_price:.2f}")
@@ -132,23 +132,19 @@ if df_processed is not None and spot_price is not None:
         st.divider()
         st.subheader("Charts Dashboard (GEX, OI, Volume)")
         
-        # Layout a 3 colonne
         col1, col2, col3 = st.columns(3)
-        
         with col1:
             st.markdown("#### Profilo GEX")
             fig_gex = create_gex_profile_chart(
                 gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
             )
             st.plotly_chart(fig_gex, use_container_width=True, key="summary_gex_chart")
-
         with col2:
             st.markdown("#### Distribuzione OI")
             fig_oi = create_oi_profile_chart(
                 oi_metrics['df_oi_profile'], spot_price, selected_expiry_label
             )
             st.plotly_chart(fig_oi, use_container_width=True, key="summary_oi_chart")
-        
         with col3:
             st.markdown("#### Distribuzione Volumi")
             fig_vol = create_volume_profile_chart(
@@ -183,14 +179,22 @@ if df_processed is not None and spot_price is not None:
         st.subheader("Metriche Volumi (Attività di Giornata)")
         st.plotly_chart(fig_vol, use_container_width=True, key="vol_tab_chart")
         
-        # --- [NUOVO] Grafico Drift Aggiunto al Tab ---
         st.divider()
-        st.subheader("Analisi Drift (Rapporto Vol/OI)")
-        st.info("Questo grafico mostra gli strike 'caldi'. Un rapporto > 1.0 indica che il volume odierno ha superato l'intero Open Interest esistente, segnalando un'attività insolita e un potenziale 'drift' rispetto ai livelli di OI statici.")
-        fig_drift = create_activity_ratio_chart(
+        st.subheader("Analisi Drift (Sintesi e Dettaglio)")
+        st.info("La 'Sintesi Drift Volumi' calcola il VWAS (Volume Weighted Average Strike) e lo confronta con lo Spot. Una freccia a destra indica che l'attività odierna è concentrata su strike più alti (bias rialzista); una freccia a sinistra indica un bias ribassista.")
+        
+        # --- [NUOVO] Grafico Freccia Drift ---
+        fig_drift_arrow = create_drift_arrow_chart(
+            activity_metrics['drift_score'], spot_price, selected_expiry_label
+        )
+        st.plotly_chart(fig_drift_arrow, use_container_width=True, key="drift_arrow_chart")
+
+        st.markdown("##### Dettaglio Rapporto Vol/OI")
+        st.info("Questo grafico mostra gli strike 'caldi'. Un rapporto > 1.0 indica che il volume odierno ha superato l'intero Open Interest esistente, segnalando un'attività insolita.")
+        fig_drift_detail = create_activity_ratio_chart(
             activity_metrics['df_activity_profile'], spot_price, selected_expiry_label
         )
-        st.plotly_chart(fig_drift, use_container_width=True, key="drift_tab_chart")
+        st.plotly_chart(fig_drift_detail, use_container_width=True, key="drift_detail_chart")
         
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 3: STATISTICAL MODELS
