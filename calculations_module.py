@@ -1,15 +1,12 @@
 # File: calculations_module.py
 #
-# [AGGIORNATO]
-# 1. Aggiunta la funzione 'calculate_activity_ratio'
-#    per il nuovo grafico di "Drift Analysis".
+# [VERSIONE COMPLETA]
+# Contiene TUTTE le funzioni di calcolo,
+# inclusa l'ultima 'calculate_activity_ratio' con il 'drift_score'.
 # -----------------------------------------------------------------------------
 
 import pandas as pd
 import numpy as np
-
-# ... (tutte le funzioni precedenti: calculate_gex_metrics, 
-#      calculate_oi_walls, calculate_max_pain, etc. restano invariate) ...
 
 def calculate_gex_metrics(df_selected_expiry, spot_price):
     """Calcola le metriche GEX per una *singola* scadenza."""
@@ -131,10 +128,9 @@ def calculate_volume_profile(df_selected_expiry, spot_price):
     df_vol_profile['Puts_Vol_Neg'] = df_vol_profile['Puts_Vol'] * -1.0
     return {'df_vol_profile': df_vol_profile}
 
-# --- [NUOVA FUNZIONE] ---
 def calculate_activity_ratio(df_selected_expiry, spot_price):
     """
-    Calcola il rapporto Vol/OI per identificare il "Drift".
+    Calcola il rapporto Vol/OI e un Drift Score per identificare lo spostamento dell'attività.
     """
     range_lower = spot_price * 0.75
     range_upper = spot_price * 1.25
@@ -143,22 +139,37 @@ def calculate_activity_ratio(df_selected_expiry, spot_price):
         (df_selected_expiry['Strike'] <= range_upper)
     ]
     
-    # Raggruppa per Strike e Tipo, sommando sia OI che Vol
     df_grouped = df_relevant.groupby(['Strike', 'Type'])[['OI', 'Vol']].sum().unstack(fill_value=0)
     
-    # Crea colonne separate
     df_profile = pd.DataFrame(index=df_grouped.index)
     df_profile['Call_OI'] = df_grouped[('OI', 'Call')]
     df_profile['Call_Vol'] = df_grouped[('Vol', 'Call')]
     df_profile['Put_OI'] = df_grouped[('OI', 'Put')]
     df_profile['Put_Vol'] = df_grouped[('Vol', 'Put')]
     
-    # Calcola il rapporto (usiamo OI+1 per evitare divisione per zero)
-    # Questo evidenzia gli strike con OI=0 e Vol > 0
     df_profile['Call_Activity_Ratio'] = df_profile['Call_Vol'] / (df_profile['Call_OI'] + 1)
     df_profile['Put_Activity_Ratio'] = df_profile['Put_Vol'] / (df_profile['Put_OI'] + 1)
     
-    # Negativo per il grafico
     df_profile['Put_Activity_Ratio_Neg'] = df_profile['Put_Activity_Ratio'] * -1.0
     
-    return {'df_activity_profile': df_profile.reset_index()}
+    # --- CALCOLO DRIFT SCORE ---
+    drift_score = 0
+    total_relevant_volume = df_relevant['Vol'].sum()
+
+    if total_relevant_volume > 0:
+        # Calcola il Volume Weighted Average Strike (VWAS) per Calls e Puts
+        call_vwas = (df_profile.index.get_level_values('Strike') * df_profile['Call_Vol']).sum() / df_profile['Call_Vol'].sum() if df_profile['Call_Vol'].sum() > 0 else spot_price
+        put_vwas = (df_profile.index.get_level_values('Strike') * df_profile['Put_Vol']).sum() / df_profile['Put_Vol'].sum() if df_profile['Put_Vol'].sum() > 0 else spot_price
+
+        total_call_vol = df_profile['Call_Vol'].sum()
+        total_put_vol = df_profile['Put_Vol'].sum()
+
+        if (total_call_vol + total_put_vol) > 0:
+            drift_score = (call_vwas * total_call_vol + put_vwas * total_put_vol) / (total_call_vol + total_put_vol)
+        else:
+            drift_score = spot_price # Nessun volume, il drift è lo spot
+            
+    return {
+        'df_activity_profile': df_profile.reset_index(),
+        'drift_score': drift_score
+    }
