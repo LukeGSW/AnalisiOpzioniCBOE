@@ -1,8 +1,9 @@
 # File: calculations_module.py
 #
-# [VERSIONE OTTIMIZZATA]
-# - calculate_gex_metrics: Aggiunto ordinamento e logica "Closest Flip to Spot".
-# - Altre funzioni: Validate e confermate.
+# [VERSIONE DEFINITIVA & CORRETTA]
+# - FIX GEX: Ordinamento e logica "Flip più vicino".
+# - FIX DRIFT (VWAS): Ora calcola il "Call VWAS" per isolare il target speculativo
+#   ed evitare la distorsione ribassista delle Put OTM.
 # -----------------------------------------------------------------------------
 
 import pandas as pd
@@ -27,38 +28,32 @@ def calculate_gex_metrics(df_selected_expiry, spot_price):
     try:
         if not df_gex_strike.empty and len(df_gex_strike) > 1:
             # Identifica i punti dove il segno cambia (Zero Crossing)
-            # signs sarà un array di -1, 0, 1
             signs = np.sign(df_gex_strike['Net_GEX'])
             
-            # Trova dove il segno corrente è diverso dal prossimo (e non sono NaN)
+            # Trova dove il segno corrente è diverso dal prossimo
             sign_change = (signs != signs.shift(-1)) & (signs.shift(-1).notna())
-            
-            # Indici dei punti PRIMA del cambio di segno
             flip_indices = df_gex_strike.index[sign_change]
             
             candidates = []
             
             for idx in flip_indices:
-                # Prendi i due punti a cavallo dello zero
+                # Punti a cavallo dello zero
                 row_curr = df_gex_strike.iloc[idx]
                 row_next = df_gex_strike.iloc[idx+1]
                 
                 x0, y0 = row_curr['Strike'], row_curr['Net_GEX']
                 x1, y1 = row_next['Strike'], row_next['Net_GEX']
                 
-                # Interpolazione Lineare per trovare Strike esatto dove GEX = 0
-                if y1 - y0 != 0: # Evita divisione per zero
+                # Interpolazione Lineare
+                if y1 - y0 != 0:
                     zero_cross = x0 - (y0 * (x1 - x0) / (y1 - y0))
                     candidates.append(zero_cross)
             
             if candidates:
-                # SELEZIONE INTELLIGENTE:
-                # Tra tutti i punti di inversione (può essercene più di uno),
-                # scegli quello più vicino allo Spot Price attuale.
+                # Sceglie il flip point più vicino al prezzo attuale (ignora rumore OTM)
                 gamma_switch_local = min(candidates, key=lambda x: abs(x - spot_price))
                 spot_delta = spot_price - gamma_switch_local
             else:
-                # Se non ci sono cambi di segno (tutto positivo o tutto negativo)
                 gamma_switch_local = None
                 spot_delta = None
 
@@ -82,18 +77,18 @@ def calculate_oi_walls(df_selected_expiry, spot_price):
         (df_selected_expiry['Strike'] >= range_lower) & (df_selected_expiry['Strike'] <= range_upper)
     ]
 
+    # Put Wall: Strike con max OI tra le Put <= Spot
     oi_puts_support = df_oi_relevant[(df_oi_relevant['Type'] == 'Put') & (df_oi_relevant['Strike'] <= spot_price)]
     put_wall_strike, max_put_oi = (None, 0)
     if not oi_puts_support.empty:
-        # Trova lo strike con max OI tra le Put sotto il prezzo
         idx_max = oi_puts_support['OI'].idxmax()
         put_wall_strike = oi_puts_support.loc[idx_max]['Strike']
         max_put_oi = oi_puts_support['OI'].max()
 
+    # Call Wall: Strike con max OI tra le Call >= Spot
     oi_calls_res = df_oi_relevant[(df_oi_relevant['Type'] == 'Call') & (df_oi_relevant['Strike'] >= spot_price)]
     call_wall_strike, max_call_oi = (None, 0)
     if not oi_calls_res.empty:
-        # Trova lo strike con max OI tra le Call sopra il prezzo
         idx_max = oi_calls_res['OI'].idxmax()
         call_wall_strike = oi_calls_res.loc[idx_max]['Strike']
         max_call_oi = oi_calls_res['OI'].max()
@@ -110,13 +105,11 @@ def calculate_oi_walls(df_selected_expiry, spot_price):
 
 def calculate_max_pain(df_selected_expiry):
     """Calcola lo strike Max Pain per la scadenza selezionata."""
-    
     strikes = sorted(df_selected_expiry['Strike'].unique())
     calls_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Call'].set_index('Strike')['OI']
     puts_oi = df_selected_expiry[df_selected_expiry['Type'] == 'Put'].set_index('Strike')['OI']
     total_payout_list = []
     
-    # Ottimizzazione: vettorizzazione possibile ma il loop è abbastanza veloce per singola scadenza
     for expiry_price in strikes:
         call_intrinsic = (expiry_price - calls_oi.index).to_numpy().clip(min=0)
         call_payout = (call_intrinsic * calls_oi).sum()
@@ -140,21 +133,14 @@ def calculate_pc_ratios(df_selected_expiry):
     return {'pc_oi_ratio': pc_oi_ratio, 'pc_vol_ratio': pc_vol_ratio}
 
 def calculate_expected_move(df_selected_expiry, spot_price):
-    """Calcola il movimento atteso (Expected Move) basato sulla IV ATM."""
+    """Calcola il movimento atteso basato sulla IV ATM."""
     try:
-        # Trova lo strike più vicino allo spot
         atm_strike_index = (df_selected_expiry['Strike'] - spot_price).abs().idxmin()
         atm_strike_val = df_selected_expiry.loc[atm_strike_index]['Strike']
-        
-        # Filtra per strike ATM
         df_atm = df_selected_expiry[df_selected_expiry['Strike'] == atm_strike_val]
-        
-        # Media IV se ci sono più opzioni (es. call/put) allo stesso strike
         iv_atm = df_atm['IV'].mean()
         dte_years = df_atm['DTE_Years'].iloc[0]
-        
-        if dte_years <= 0: dte_years = 1 / 365.25 # Evita radice di zero
-        
+        if dte_years <= 0: dte_years = 1 / 365.25 
         move = spot_price * iv_atm * np.sqrt(dte_years)
         return {'move': move, 'upper_band': spot_price + move, 'lower_band': spot_price - move, 'iv_atm': iv_atm}
     except Exception as e:
@@ -176,8 +162,13 @@ def calculate_volume_profile(df_selected_expiry, spot_price):
 
 def calculate_activity_ratio(df_selected_expiry, spot_price):
     """
-    Calcola il rapporto Vol/OI e un Drift Score.
-    Drift Score = VWAS (Volume Weighted Average Strike) - Spot Price.
+    Calcola il rapporto Vol/OI e il 'Drift Score' (VWAS).
+    
+    [LOGICA AGGIORNATA]
+    Il Drift Score ora calcola il VWAS (Volume Weighted Average Strike)
+    SOLO DELLE CALL. Questo serve a identificare il 'Target Speculativo'
+    del mercato, eliminando il rumore delle Put difensive OTM che 
+    falserebbero il segnale al ribasso.
     """
     range_lower = spot_price * 0.75
     range_upper = spot_price * 1.25
@@ -187,34 +178,31 @@ def calculate_activity_ratio(df_selected_expiry, spot_price):
     ]
     
     df_grouped = df_relevant.groupby(['Strike', 'Type'])[['OI', 'Vol']].sum().unstack(fill_value=0)
-    
     df_profile = pd.DataFrame(index=df_grouped.index)
     df_profile['Call_OI'] = df_grouped[('OI', 'Call')]
     df_profile['Call_Vol'] = df_grouped[('Vol', 'Call')]
     df_profile['Put_OI'] = df_grouped[('OI', 'Put')]
     df_profile['Put_Vol'] = df_grouped[('Vol', 'Put')]
     
-    # Activity Ratio: Volume / (OI + 1) per evitare divisione per zero
     df_profile['Call_Activity_Ratio'] = df_profile['Call_Vol'] / (df_profile['Call_OI'] + 1)
     df_profile['Put_Activity_Ratio'] = df_profile['Put_Vol'] / (df_profile['Put_OI'] + 1)
-    
     df_profile['Put_Activity_Ratio_Neg'] = df_profile['Put_Activity_Ratio'] * -1.0
     
-    # --- CALCOLO DRIFT SCORE (VWAS) ---
+    # --- CALCOLO DRIFT SCORE (CALL VWAS) ---
     drift_score = 0
-    total_relevant_volume = df_relevant['Vol'].sum()
+    
+    # Filtriamo solo le Call per il calcolo del target direzionale
+    calls_only = df_relevant[df_relevant['Type'] == 'Call']
+    total_call_vol = calls_only['Vol'].sum()
 
-    if total_relevant_volume > 0:
-        # Calcolo VWAS Globale (Call + Put)
-        # Formula: Somma(Strike * Volume) / Somma(Volume)
-        
-        # Facciamo una groupby solo per Strike per sommare Call+Put vol allo stesso strike
-        vol_by_strike = df_relevant.groupby('Strike')['Vol'].sum()
-        
-        vwas = (vol_by_strike.index * vol_by_strike).sum() / vol_by_strike.sum()
-        drift_score = vwas # Restituiamo il valore assoluto del VWAS
-        
+    if total_call_vol > 0:
+        # Calcolo VWAS Calls: Somma(Strike * Call_Vol) / Somma(Call_Vol)
+        # Questo ci dice dove si concentra la massa monetaria rialzista
+        call_vol_by_strike = calls_only.groupby('Strike')['Vol'].sum()
+        call_vwas = (call_vol_by_strike.index * call_vol_by_strike).sum() / call_vol_by_strike.sum()
+        drift_score = call_vwas 
     else:
+        # Se non c'è volume call, il target è neutro (spot price)
         drift_score = spot_price 
             
     return {
