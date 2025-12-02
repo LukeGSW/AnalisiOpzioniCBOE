@@ -1,8 +1,8 @@
 # File: app.py
 #
-# [VERSIONE COMPLETA]
-# Contiene l'integrazione finale per il 'Drift Arrow Chart'
-# nel tab 'Support/Resistance'.
+# [VERSIONE AGGIORNATA & PULITA]
+# - Include tutte le funzionalità originali (Drift Chart, GEX, OI, Stats).
+# - RISOLTO: Sostituito parametro deprecato 'use_container_width' con "width='stretch'".
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -29,7 +29,7 @@ from visualization_module import (
     create_volume_profile_chart,
     create_max_pain_chart,
     create_activity_ratio_chart,
-    create_drift_arrow_chart # <-- Nuovo
+    create_drift_arrow_chart 
 )
 
 # -----------------------------------------------------------------------------
@@ -86,6 +86,12 @@ if df_processed is not None and spot_price is not None:
     # --- 3.1. Barra dei Controlli (Selettore Scadenza) ---
     unique_expirations = sorted(df_processed['Expiration Date'].unique())
     expiry_options_map = {date.strftime('%Y-%m-%d (%a)'): date for date in unique_expirations}
+    
+    # Safety check se il file non ha scadenze leggibili
+    if not expiry_options_map:
+        st.error("Nessuna scadenza valida trovata nel file.")
+        st.stop()
+
     df_expiry_oi = df_processed.groupby('Expiration Date')['OI'].sum()
     default_expiry_label = df_expiry_oi.idxmax().strftime('%Y-%m-%d (%a)')
     
@@ -138,19 +144,20 @@ if df_processed is not None and spot_price is not None:
             fig_gex = create_gex_profile_chart(
                 gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
             )
-            st.plotly_chart(fig_gex, use_container_width=True, key="summary_gex_chart")
+            # FIX: width="stretch" invece di use_container_width=True
+            st.plotly_chart(fig_gex, width="stretch", key="summary_gex_chart")
         with col2:
             st.markdown("#### Distribuzione OI")
             fig_oi = create_oi_profile_chart(
                 oi_metrics['df_oi_profile'], spot_price, selected_expiry_label
             )
-            st.plotly_chart(fig_oi, use_container_width=True, key="summary_oi_chart")
+            st.plotly_chart(fig_oi, width="stretch", key="summary_oi_chart")
         with col3:
             st.markdown("#### Distribuzione Volumi")
             fig_vol = create_volume_profile_chart(
                 vol_metrics['df_vol_profile'], spot_price, selected_expiry_label
             )
-            st.plotly_chart(fig_vol, use_container_width=True, key="summary_vol_chart")
+            st.plotly_chart(fig_vol, width="stretch", key="summary_vol_chart")
 
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 1: GAMMA ANALYSIS
@@ -161,7 +168,7 @@ if df_processed is not None and spot_price is not None:
         col1.metric(label="Net GEX", value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B")
         col2.metric(label="Gamma Switch Point", value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] else "N/A")
         col3.metric(label="Spot-Switch Delta", value=f"{gex_metrics['spot_switch_delta']:.2f}" if gex_metrics['spot_switch_delta'] else "N/A")
-        st.plotly_chart(fig_gex, use_container_width=True, key="gex_tab_chart")
+        st.plotly_chart(fig_gex, width="stretch", key="gex_tab_chart")
 
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 2: SUPPORT/RESISTANCE (OI & Vol)
@@ -173,28 +180,28 @@ if df_processed is not None and spot_price is not None:
         col1, col2 = st.columns(2)
         col1.metric(label="🛡️ Put Wall", value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A", help=f"OI: {oi_metrics['put_wall_oi']:,.0f}")
         col2.metric(label="🛑 Call Wall", value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A", help=f"OI: {oi_metrics['call_wall_oi']:,.0f}")
-        st.plotly_chart(fig_oi, use_container_width=True, key="oi_tab_chart")
+        st.plotly_chart(fig_oi, width="stretch", key="oi_tab_chart")
         
         st.divider()
         st.subheader("Metriche Volumi (Attività di Giornata)")
-        st.plotly_chart(fig_vol, use_container_width=True, key="vol_tab_chart")
+        st.plotly_chart(fig_vol, width="stretch", key="vol_tab_chart")
         
         st.divider()
         st.subheader("Analisi Drift (Sintesi e Dettaglio)")
         st.info("La 'Sintesi Drift Volumi' calcola il VWAS (Volume Weighted Average Strike) e lo confronta con lo Spot. Una freccia a destra indica che l'attività odierna è concentrata su strike più alti (bias rialzista); una freccia a sinistra indica un bias ribassista.")
         
-        # --- [NUOVO] Grafico Freccia Drift ---
+        # Grafico Freccia Drift
         fig_drift_arrow = create_drift_arrow_chart(
             activity_metrics['drift_score'], spot_price, selected_expiry_label
         )
-        st.plotly_chart(fig_drift_arrow, use_container_width=True, key="drift_arrow_chart")
+        st.plotly_chart(fig_drift_arrow, width="stretch", key="drift_arrow_chart")
 
         st.markdown("##### Dettaglio Rapporto Vol/OI")
         st.info("Questo grafico mostra gli strike 'caldi'. Un rapporto > 1.0 indica che il volume odierno ha superato l'intero Open Interest esistente, segnalando un'attività insolita.")
         fig_drift_detail = create_activity_ratio_chart(
             activity_metrics['df_activity_profile'], spot_price, selected_expiry_label
         )
-        st.plotly_chart(fig_drift_detail, use_container_width=True, key="drift_detail_chart")
+        st.plotly_chart(fig_drift_detail, width="stretch", key="drift_detail_chart")
         
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 3: STATISTICAL MODELS
@@ -221,7 +228,7 @@ if df_processed is not None and spot_price is not None:
         st.divider()
         st.subheader(f"Grafico Max Pain (Payout Totale a Scadenza)")
         fig_max_pain = create_max_pain_chart(df_payouts, max_pain_strike, selected_expiry_label)
-        st.plotly_chart(fig_max_pain, use_container_width=True, key="max_pain_chart")
+        st.plotly_chart(fig_max_pain, width="stretch", key="max_pain_chart")
         
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 4: VOLATILITY SURFACE
@@ -230,4 +237,4 @@ if df_processed is not None and spot_price is not None:
         st.header("Superficie di Volatilità (Tutte le Scadenze)")
         with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
             fig_vol_surf = create_volatility_surface_3d(df_processed)
-            st.plotly_chart(fig_vol_surf, key="vol_surface_chart")
+            st.plotly_chart(fig_vol_surf, width="stretch", key="vol_surface_chart")
