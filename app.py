@@ -1,7 +1,8 @@
 # File: app.py
 #
-# [VERSIONE AGGIORNATA & PULITA]
+# [VERSIONE AGGIORNATA & PULITA - CON EXPORT JSON]
 # - Include tutte le funzionalità originali (Drift Chart, GEX, OI, Stats).
+# - INCLUDE: Pulsante per scaricare i dati di analisi in formato JSON (LLM Ready).
 # - RISOLTO: Sostituito parametro deprecato 'use_container_width' con "width='stretch'".
 # -----------------------------------------------------------------------------
 
@@ -10,6 +11,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import datetime as dt
+import json
 
 # --- Importa i nostri moduli custom ---
 from data_module import parse_cboe_csv
@@ -31,6 +33,27 @@ from visualization_module import (
     create_activity_ratio_chart,
     create_drift_arrow_chart 
 )
+
+# -----------------------------------------------------------------------------
+# HELPER: SERIALIZZAZIONE JSON
+# -----------------------------------------------------------------------------
+class NumpyEncoder(json.JSONEncoder):
+    """
+    Encoder personalizzato per gestire tipi NumPy e Pandas durante 
+    la conversione in JSON. Fondamentale per evitare errori di tipo.
+    """
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient='records')
+        elif isinstance(obj, (pd.Timestamp, dt.date, dt.datetime)):
+            return obj.isoformat()
+        return super(NumpyEncoder, self).default(obj)
 
 # -----------------------------------------------------------------------------
 # 1. IMPOSTAZIONE PAGINA E TEMA
@@ -114,11 +137,70 @@ if df_processed is not None and spot_price is not None:
         pc_ratios = calculate_pc_ratios(df_selected_expiry)
         expected_move = calculate_expected_move(df_selected_expiry, spot_price)
     
+    # =========================================================================
+    #  UPGRADE: PREPARAZIONE EXPORT JSON
+    # =========================================================================
+    export_data = {
+        "metadata": {
+            "application": "Kriterion Quant - SPX Analyzer",
+            "export_date": dt.datetime.now().isoformat(),
+            "analyzed_expiry": selected_expiry_label,
+            "spot_price": spot_price,
+            "data_timestamp_file": str(data_timestamp)
+        },
+        "market_summary": {
+            "max_pain": max_pain_strike,
+            "put_call_ratio_oi": pc_ratios['pc_oi_ratio'],
+            "put_call_ratio_vol": pc_ratios['pc_vol_ratio'],
+            "expected_move_value": expected_move['move'],
+            "expected_move_range": [expected_move['lower_band'], expected_move['upper_band']],
+            "implied_vol_atm": expected_move['iv_atm']
+        },
+        "gamma_analysis": {
+            "total_net_gex": gex_metrics['total_net_gex'],
+            "gamma_switch_point": gex_metrics['gamma_switch_point'],
+            "spot_switch_delta": gex_metrics['spot_switch_delta'],
+            # Convertiamo il DF del profilo GEX in lista di dizionari per l'LLM
+            "gex_profile_data": gex_metrics['df_gex_profile'].to_dict(orient='records')
+        },
+        "levels_support_resistance": {
+            "put_wall_strike": oi_metrics['put_wall_strike'],
+            "put_wall_oi": oi_metrics['put_wall_oi'],
+            "call_wall_strike": oi_metrics['call_wall_strike'],
+            "call_wall_oi": oi_metrics['call_wall_oi'],
+            # Dati completi per analisi struttura OI
+            "oi_structure": oi_metrics['df_oi_profile'].to_dict(orient='records')
+        },
+        "drift_analysis": {
+            "vwas_drift_score": activity_metrics['drift_score'],
+            "drift_bias": "BULLISH" if activity_metrics['drift_score'] > spot_price else "BEARISH",
+            "volume_structure": vol_metrics['df_vol_profile'].to_dict(orient='records'),
+            "activity_ratios": activity_metrics['df_activity_profile'].to_dict(orient='records')
+        }
+    }
+    
+    # Serializzazione in stringa JSON
+    json_string = json.dumps(export_data, cls=NumpyEncoder, indent=4)
+
     # --- 3.4. Architettura Tab ---
     tab_summary, tab_gex, tab_oi_vol, tab_stats, tab_vol_surf = st.tabs([
         '📋 Summary Dashboard', '📊 Gamma Analysis',
         '🎯 Support/Resistance (OI & Vol)', '📉 Statistical Models', '📈 Volatility Surface'
     ])
+
+    # -----------------------------------------------------------------
+    # POPOLAMENTO SIDEBAR (Download Button)
+    # -----------------------------------------------------------------
+    with st.sidebar:
+        st.divider()
+        st.header("📥 Export Dati")
+        st.download_button(
+            label="Scarica JSON Analisi (LLM Ready)",
+            data=json_string,
+            file_name=f"kriterion_spx_analysis_{selected_expiry_label.split()[0]}.json",
+            mime="application/json",
+            help="Scarica un file JSON strutturato contenente tutti i calcoli (GEX, OI, Drift, Max Pain) per la scadenza selezionata."
+        )
 
     # -----------------------------------------------------------------
     # POPOLAMENTO TAB 0: SUMMARY DASHBOARD
@@ -144,7 +226,6 @@ if df_processed is not None and spot_price is not None:
             fig_gex = create_gex_profile_chart(
                 gex_metrics['df_gex_profile'], spot_price, gex_metrics['gamma_switch_point'], selected_expiry_label
             )
-            # FIX: width="stretch" invece di use_container_width=True
             st.plotly_chart(fig_gex, width="stretch", key="summary_gex_chart")
         with col2:
             st.markdown("#### Distribuzione OI")
