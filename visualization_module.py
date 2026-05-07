@@ -1,8 +1,9 @@
 # File: visualization_module.py
 #
-# [VERSIONE COMPLETA]
-# Contiene TUTTE le funzioni di plotting,
-# inclusa l'ultima 'create_drift_arrow_chart'.
+# [VERSIONE v2 - CON GRAFICI DEX E VEX]
+# Contiene TUTTE le funzioni di plotting, incluse le nuove:
+# - create_dex_profile_chart: Delta Exposure per Strike (colori bullish/bearish)
+# - create_vex_profile_chart: Vanna Exposure per Strike (colori viola/arancione)
 # -----------------------------------------------------------------------------
 
 import plotly.graph_objects as go
@@ -11,15 +12,21 @@ import pandas as pd
 from scipy.interpolate import griddata
 
 # -----------------------------------------------------------------------------
-# 1. TEMA GRAFICO PROFESSIONALE (Sezione 5.3)
+# 1. TEMA GRAFICO PROFESSIONALE
 # -----------------------------------------------------------------------------
 KRITERION_THEME = {
     'paper_bgcolor': '#0e1117',  'plot_bgcolor': '#111827',
     'font_color': '#e5e7eb',     'gridcolor': '#1f2937',
     'zerolinecolor': '#6b7280',  'color_bullish': '#10b981',
-    'color_bearish': '#ef4444', 'color_neutral': '#3b82f6',
+    'color_bearish': '#ef4444',  'color_neutral': '#3b82f6',
     'color_accent': '#facc15',
+    # Colori esclusivi per VEX/DEX — non confondibili con il GEX
+    'color_vex_pos': '#8b5cf6',  # Viola (VEX positivo)
+    'color_vex_neg': '#f97316',  # Arancione (VEX negativo)
+    'color_dex_pos': '#10b981',  # Verde (DEX positivo = dealer short delta → mercato in pressione)
+    'color_dex_neg': '#ef4444',  # Rosso  (DEX negativo = dealer long delta → mercato in acquisto)
 }
+
 
 def apply_kriterion_theme(fig):
     """Applica il layout standard Kriterion Quant a una figura Plotly."""
@@ -41,32 +48,43 @@ def apply_kriterion_theme(fig):
     )
     return fig
 
+
 # -----------------------------------------------------------------------------
-# 2. GRAFICO 1: GEX PROFILE (Orizzontale)
+# 2. GEX PROFILE (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, expiry_label):
     """Crea il Bar Chart GEX (orizzontale, strike su Asse Y)."""
-    
     range_lower = spot_price * 0.80
     range_upper = spot_price * 1.20
-    df_plot = df_gex_profile[(df_gex_profile['Strike'] >= range_lower) & (df_gex_profile['Strike'] <= range_upper)].copy()
-    
-    df_plot['Color'] = np.where(df_plot['Net_GEX'] > 0, 
-                                KRITERION_THEME['color_bullish'], 
-                                KRITERION_THEME['color_bearish'])
-    
+    df_plot = df_gex_profile[
+        (df_gex_profile['Strike'] >= range_lower) &
+        (df_gex_profile['Strike'] <= range_upper)
+    ].copy()
+
+    df_plot['Color'] = np.where(
+        df_plot['Net_GEX'] > 0,
+        KRITERION_THEME['color_bullish'],
+        KRITERION_THEME['color_bearish']
+    )
+
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df_plot['Net_GEX'], y=df_plot['Strike'],
         orientation='h', marker_color=df_plot['Color'], name="Net GEX",
         hovertemplate="<b>Strike: %{y}</b><br>Net GEX: %{x:,.0f}<extra></extra>"
     ))
-    fig.add_hline(y=spot_price, line_width=2, line_dash="dot", line_color=KRITERION_THEME['color_neutral'],
-                  annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right")
+    fig.add_hline(
+        y=spot_price, line_width=2, line_dash="dot",
+        line_color=KRITERION_THEME['color_neutral'],
+        annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right"
+    )
     if gamma_switch_point:
-        fig.add_hline(y=gamma_switch_point, line_width=2, line_dash="dash", line_color=KRITERION_THEME['color_accent'],
-                      annotation_text=f"Switch: {gamma_switch_point:.2f}", annotation_position="bottom left")
-    
+        fig.add_hline(
+            y=gamma_switch_point, line_width=2, line_dash="dash",
+            line_color=KRITERION_THEME['color_accent'],
+            annotation_text=f"Switch: {gamma_switch_point:.2f}", annotation_position="bottom left"
+        )
+
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Profilo GEX (Scadenza: {expiry_label})",
@@ -75,13 +93,13 @@ def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, exp
     )
     return fig
 
+
 # -----------------------------------------------------------------------------
-# 3. GRAFICO 2: OI DISTRIBUTION (Orizzontale)
+# 3. OI DISTRIBUTION (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
     """Crea il Grafico OI Bidirezionale (orizzontale, strike su Asse Y)."""
     fig = go.Figure()
-
     fig.add_trace(go.Bar(
         x=df_oi_profile['Calls_OI'], y=df_oi_profile['Strike'],
         orientation='h', name="Calls OI (Resistenza)", marker_color=KRITERION_THEME['color_bullish'],
@@ -93,9 +111,11 @@ def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
         customdata=df_oi_profile['Puts_OI'],
         hovertemplate="<b>Strike: %{y}</b><br>Puts OI: %{customdata:,.0f}<extra></extra>"
     ))
-    fig.add_hline(y=spot_price, line_width=2, line_dash="dot", line_color=KRITERION_THEME['color_neutral'],
-                  annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right")
-    
+    fig.add_hline(
+        y=spot_price, line_width=2, line_dash="dot",
+        line_color=KRITERION_THEME['color_neutral'],
+        annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right"
+    )
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Distribuzione OI (Scadenza: {expiry_label})",
@@ -104,13 +124,13 @@ def create_oi_profile_chart(df_oi_profile, spot_price, expiry_label):
     )
     return fig
 
+
 # -----------------------------------------------------------------------------
-# 4. GRAFICO 3: VOLUME DISTRIBUTION (Orizzontale)
+# 4. VOLUME DISTRIBUTION (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_volume_profile_chart(df_vol_profile, spot_price, expiry_label):
     """Crea il Grafico Volumi Bidirezionale (orizzontale, strike su Asse Y)."""
     fig = go.Figure()
-
     fig.add_trace(go.Bar(
         x=df_vol_profile['Calls_Vol'], y=df_vol_profile['Strike'],
         orientation='h', name="Calls Volume", marker_color=KRITERION_THEME['color_bullish'],
@@ -122,9 +142,11 @@ def create_volume_profile_chart(df_vol_profile, spot_price, expiry_label):
         customdata=df_vol_profile['Puts_Vol'],
         hovertemplate="<b>Strike: %{y}</b><br>Puts Vol: %{customdata:,.0f}<extra></extra>"
     ))
-    fig.add_hline(y=spot_price, line_width=2, line_dash="dot", line_color=KRITERION_THEME['color_neutral'],
-                  annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right")
-    
+    fig.add_hline(
+        y=spot_price, line_width=2, line_dash="dot",
+        line_color=KRITERION_THEME['color_neutral'],
+        annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right"
+    )
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Distribuzione Volumi (Scadenza: {expiry_label})",
@@ -133,21 +155,23 @@ def create_volume_profile_chart(df_vol_profile, spot_price, expiry_label):
     )
     return fig
 
+
 # -----------------------------------------------------------------------------
-# 5. GRAFICO 4: MAX PAIN (Orizzontale)
+# 5. MAX PAIN (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
-    """Crea il grafico del Payout Totale (Max Pain) (orizzontale)."""
-    
+    """Crea il grafico del Payout Totale (Max Pain)."""
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df_payouts['Total_Payout'], y=df_payouts['Strike'],
         orientation='h', name="Total Payout ($)", marker_color=KRITERION_THEME['color_neutral'],
         hovertemplate="<b>Strike: %{y}</b><br>Total Payout: %{x:,.0f}<extra></extra>"
     ))
-    fig.add_hline(y=max_pain_strike, line_width=2, line_dash="dash", line_color=KRITERION_THEME['color_accent'],
-                  annotation_text=f"Max Pain: {max_pain_strike:.0f}", annotation_position="bottom left")
-    
+    fig.add_hline(
+        y=max_pain_strike, line_width=2, line_dash="dash",
+        line_color=KRITERION_THEME['color_accent'],
+        annotation_text=f"Max Pain: {max_pain_strike:.0f}", annotation_position="bottom left"
+    )
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Payout Totale a Scadenza (Max Pain) per {expiry_label}",
@@ -156,23 +180,29 @@ def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
     )
     return fig
 
+
 # -----------------------------------------------------------------------------
-# 6. GRAFICO 5: VOLATILITY SURFACE 3D
+# 6. VOLATILITY SURFACE 3D
 # -----------------------------------------------------------------------------
 def create_volatility_surface_3d(df_all_processed):
     """Crea la superficie 3D della Volatilità Implicita (IV)."""
     try:
-        df_surf_puts = df_all_processed[(df_all_processed['Type'] == 'Put') & (df_all_processed['Moneyness'] < 1.0)].copy()
+        df_surf_puts  = df_all_processed[(df_all_processed['Type'] == 'Put')  & (df_all_processed['Moneyness'] < 1.0)].copy()
         df_surf_calls = df_all_processed[(df_all_processed['Type'] == 'Call') & (df_all_processed['Moneyness'] > 1.0)].copy()
         df_surf = pd.concat([df_surf_puts, df_surf_calls])
         df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 1.50)]
-        if len(df_surf) < 20: raise Exception("Dati OTM insufficienti.")
-        
-        x_grid = np.linspace(df_surf['DTE_Days'].min(), df_surf['DTE_Days'].max(), 50) 
+        if len(df_surf) < 20:
+            raise Exception("Dati OTM insufficienti.")
+
+        x_grid = np.linspace(df_surf['DTE_Days'].min(), df_surf['DTE_Days'].max(), 50)
         y_grid = np.linspace(df_surf['Strike'].min(), df_surf['Strike'].max(), 50)
         X_grid, Y_grid = np.meshgrid(x_grid, y_grid)
-        Z_grid = griddata(points=(df_surf['DTE_Days'], df_surf['Strike']), values=df_surf['IV'], xi=(X_grid, Y_grid), method='linear')
-        
+        Z_grid = griddata(
+            points=(df_surf['DTE_Days'], df_surf['Strike']),
+            values=df_surf['IV'],
+            xi=(X_grid, Y_grid), method='linear'
+        )
+
         fig = go.Figure()
         fig.add_trace(go.Surface(
             x=X_grid, y=Y_grid, z=Z_grid,
@@ -183,9 +213,13 @@ def create_volatility_surface_3d(df_all_processed):
         fig = apply_kriterion_theme(fig)
         fig.update_layout(
             title="Superficie di Volatilità Implicita (IV) - OTM (Tutte le Scadenze)",
-            scene=dict(xaxis_title='Days to Expiry (DTE)', yaxis_title='Strike Price', zaxis_title='Implied Volatility (IV)',
-                       xaxis=dict(gridcolor=KRITERION_THEME['gridcolor']), yaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
-                       zaxis=dict(gridcolor=KRITERION_THEME['gridcolor']), bgcolor=KRITERION_THEME['paper_bgcolor']),
+            scene=dict(
+                xaxis_title='Days to Expiry (DTE)', yaxis_title='Strike Price', zaxis_title='Implied Volatility (IV)',
+                xaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
+                yaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
+                zaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
+                bgcolor=KRITERION_THEME['paper_bgcolor']
+            ),
             scene_camera_eye=dict(x=1.8, y=-1.8, z=0.8), height=900
         )
         return fig
@@ -196,13 +230,13 @@ def create_volatility_surface_3d(df_all_processed):
         fig.update_layout(title=f"Errore nella creazione della superficie 3D: {e}", height=900)
         return fig
 
+
 # -----------------------------------------------------------------------------
-# 7. GRAFICO 6: ACTIVITY RATIO (Drift Dettagliato)
+# 7. ACTIVITY RATIO / DRIFT DETAIL (Orizzontale)
 # -----------------------------------------------------------------------------
 def create_activity_ratio_chart(df_activity_profile, spot_price, expiry_label):
     """Crea il Grafico del Rapporto Vol/OI (Drift) (orizzontale)."""
     fig = go.Figure()
-
     fig.add_trace(go.Bar(
         x=df_activity_profile['Call_Activity_Ratio'],
         y=df_activity_profile['Strike'],
@@ -217,9 +251,11 @@ def create_activity_ratio_chart(df_activity_profile, spot_price, expiry_label):
         customdata=df_activity_profile['Put_Activity_Ratio'],
         hovertemplate="<b>Strike: %{y}</b><br>Rapporto Attività: %{customdata:.2f}<extra></extra>"
     ))
-    fig.add_hline(y=spot_price, line_width=2, line_dash="dot", line_color=KRITERION_THEME['color_neutral'],
-                  annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right")
-    
+    fig.add_hline(
+        y=spot_price, line_width=2, line_dash="dot",
+        line_color=KRITERION_THEME['color_neutral'],
+        annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right"
+    )
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Analisi Drift (Rapporto Vol/OI) per {expiry_label}",
@@ -229,65 +265,199 @@ def create_activity_ratio_chart(df_activity_profile, spot_price, expiry_label):
     )
     return fig
 
+
 # -----------------------------------------------------------------------------
-# 8. GRAFICO 7: DRIFT ARROW (Sintesi)
+# 8. DRIFT ARROW (Sintesi)
 # -----------------------------------------------------------------------------
 def create_drift_arrow_chart(drift_score, spot_price, expiry_label):
-    """
-    Crea un grafico a freccia che sintetizza la direzione del drift dei volumi.
-    """
+    """Crea un grafico a freccia che sintetizza la direzione del drift dei volumi."""
     fig = go.Figure()
 
-    # Determina colore e direzione
     if drift_score > spot_price:
         color = KRITERION_THEME['color_bullish']
-        text = f"Drift Rialzista: {drift_score:.2f}"
+        text  = f"Drift Rialzista: {drift_score:.2f}"
     elif drift_score < spot_price:
         color = KRITERION_THEME['color_bearish']
-        text = f"Drift Ribassista: {drift_score:.2f}"
+        text  = f"Drift Ribassista: {drift_score:.2f}"
     else:
         color = KRITERION_THEME['color_neutral']
-        text = f"Drift Neutrale: {drift_score:.2f}"
+        text  = f"Drift Neutrale: {drift_score:.2f}"
 
-    # Calcola il range del grafico per centrare lo spot
     min_val = min(spot_price, drift_score)
     max_val = max(spot_price, drift_score)
-    padding = (max_val - min_val) * 1.5 # Aggiungi padding
-    if padding == 0: padding = spot_price * 0.01 # Padding minimo se sono uguali
-    
+    padding = (max_val - min_val) * 1.5
+    if padding == 0:
+        padding = spot_price * 0.01
     x_range = [min_val - padding, max_val + padding]
 
-    # Aggiungi la freccia (usando Scatter)
     fig.add_trace(go.Scatter(
-        x=[spot_price, drift_score],
-        y=[0, 0], # Linea orizzontale
+        x=[spot_price, drift_score], y=[0, 0],
         mode='lines+markers',
         marker=dict(
             symbol='arrow-right' if drift_score >= spot_price else 'arrow-left',
-            size=15, 
-            color=color, 
-            angleref="previous" # Fa puntare la freccia correttamente
+            size=15, color=color, angleref="previous"
         ),
         line=dict(width=4, color=color),
         name="Drift Direzionale",
         hovertemplate=f"Drift Score: {drift_score:.2f}<extra></extra>"
     ))
-
-    # Linea Spot
     fig.add_vline(
-        x=spot_price, line_width=2, line_dash="dot", 
+        x=spot_price, line_width=2, line_dash="dot",
         line_color=KRITERION_THEME['color_neutral'],
-        annotation_text=f"Spot: {spot_price:.2f}",
-        annotation_position="top"
+        annotation_text=f"Spot: {spot_price:.2f}", annotation_position="top"
     )
-    
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Sintesi Drift Volumi (VWAS) vs Spot ({expiry_label})",
         xaxis_title="Strike Price",
-        yaxis_visible=False, # Nasconde asse y
-        showlegend=False,
-        height=200, # Grafico piccolo per sintesi
-        xaxis=dict(range=x_range) # Range dinamico
+        yaxis_visible=False, showlegend=False, height=200,
+        xaxis=dict(range=x_range)
+    )
+    return fig
+
+
+# -----------------------------------------------------------------------------
+# 9. DEX PROFILE (Orizzontale) — NUOVO
+# -----------------------------------------------------------------------------
+def create_dex_profile_chart(df_dex_profile, spot_price, expiry_label):
+    """
+    Crea il Bar Chart della Delta Exposure (DEX) per Strike.
+
+    Stile: Bar chart orizzontale (strike su asse Y), identico al GEX.
+    Colori: Verde (DEX netto positivo), Rosso (DEX netto negativo).
+
+    Interpretazione:
+    - DEX > 0: I dealers hanno delta positivo netto → devono vendere
+      il sottostante per hedgiarsi (possibile pressione ribassista).
+    - DEX < 0: I dealers hanno delta negativo netto → devono acquistare
+      il sottostante per hedgiarsi (possibile supporto ai prezzi).
+
+    Args:
+        df_dex_profile : DataFrame con colonne ['Strike', 'Net_DEX']
+        spot_price     : Prezzo corrente del sottostante
+        expiry_label   : Label della scadenza per il titolo del grafico
+    """
+    range_lower = spot_price * 0.80
+    range_upper = spot_price * 1.20
+    df_plot = df_dex_profile[
+        (df_dex_profile['Strike'] >= range_lower) &
+        (df_dex_profile['Strike'] <= range_upper)
+    ].copy()
+
+    df_plot['Color'] = np.where(
+        df_plot['Net_DEX'] > 0,
+        KRITERION_THEME['color_dex_pos'],
+        KRITERION_THEME['color_dex_neg']
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df_plot['Net_DEX'],
+        y=df_plot['Strike'],
+        orientation='h',
+        marker_color=df_plot['Color'],
+        name="Net DEX",
+        hovertemplate=(
+            "<b>Strike: %{y}</b><br>"
+            "Net DEX: $%{x:,.0f}<extra></extra>"
+        )
+    ))
+
+    # Linea Spot
+    fig.add_hline(
+        y=spot_price, line_width=2, line_dash="dot",
+        line_color=KRITERION_THEME['color_neutral'],
+        annotation_text=f"Spot: {spot_price:.2f}",
+        annotation_position="bottom right"
+    )
+
+    fig = apply_kriterion_theme(fig)
+    fig.update_layout(
+        title=f"Profilo Delta Exposure — DEX (Scadenza: {expiry_label})",
+        xaxis_title="Net DEX Nozionale ($) — [Delta × OI × 100 × Spot]",
+        yaxis_title="Strike Price",
+        height=1200,
+        yaxis=dict(autorange="reversed")
+    )
+    return fig
+
+
+# -----------------------------------------------------------------------------
+# 10. VEX PROFILE (Orizzontale) — NUOVO
+# -----------------------------------------------------------------------------
+def create_vex_profile_chart(df_vex_profile, spot_price, vex_switch_point, expiry_label):
+    """
+    Crea il Bar Chart della Vanna Exposure (VEX) per Strike.
+
+    Stile: Bar chart orizzontale (strike su asse Y).
+    Colori: Viola (VEX netto positivo), Arancione (VEX netto negativo).
+    Questi colori sono deliberatamente diversi dal GEX (verde/rosso) per
+    distinguere visivamente le due analisi.
+
+    Interpretazione:
+    - VEX > 0 a un certo strike: una RIDUZIONE della volatilità
+      costringe i dealers ad ACQUISTARE il sottostante (effetto stabilizzante).
+    - VEX < 0 a un certo strike: una RIDUZIONE della volatilità
+      costringe i dealers a VENDERE il sottostante (effetto destabilizzante).
+    - Il "Vanna Switch Point" è lo strike dove l'esposizione cambia segno:
+      è un livello chiave perché al di sotto/sopra cambia il regime
+      di hedging dei dealers rispetto alla volatilità.
+
+    Args:
+        df_vex_profile    : DataFrame con colonne ['Strike', 'Net_VEX']
+        spot_price        : Prezzo corrente del sottostante
+        vex_switch_point  : Strike dello zero crossing VEX (o None)
+        expiry_label      : Label della scadenza per il titolo del grafico
+    """
+    range_lower = spot_price * 0.80
+    range_upper = spot_price * 1.20
+    df_plot = df_vex_profile[
+        (df_vex_profile['Strike'] >= range_lower) &
+        (df_vex_profile['Strike'] <= range_upper)
+    ].copy()
+
+    df_plot['Color'] = np.where(
+        df_plot['Net_VEX'] > 0,
+        KRITERION_THEME['color_vex_pos'],
+        KRITERION_THEME['color_vex_neg']
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df_plot['Net_VEX'],
+        y=df_plot['Strike'],
+        orientation='h',
+        marker_color=df_plot['Color'],
+        name="Net VEX",
+        hovertemplate=(
+            "<b>Strike: %{y}</b><br>"
+            "Net VEX: $%{x:,.2f}<extra></extra>"
+        )
+    ))
+
+    # Linea Spot
+    fig.add_hline(
+        y=spot_price, line_width=2, line_dash="dot",
+        line_color=KRITERION_THEME['color_neutral'],
+        annotation_text=f"Spot: {spot_price:.2f}",
+        annotation_position="bottom right"
+    )
+
+    # Vanna Switch Point (zero crossing — linea gialla tratteggiata, stile GEX Switch)
+    if vex_switch_point is not None:
+        fig.add_hline(
+            y=vex_switch_point, line_width=2, line_dash="dash",
+            line_color=KRITERION_THEME['color_accent'],
+            annotation_text=f"Vanna Switch: {vex_switch_point:.2f}",
+            annotation_position="bottom left"
+        )
+
+    fig = apply_kriterion_theme(fig)
+    fig.update_layout(
+        title=f"Profilo Vanna Exposure — VEX (Scadenza: {expiry_label})",
+        xaxis_title="Net VEX Nozionale ($) — [Vanna × OI × 100 × Spot × 1%]",
+        yaxis_title="Strike Price",
+        height=1200,
+        yaxis=dict(autorange="reversed")
     )
     return fig
