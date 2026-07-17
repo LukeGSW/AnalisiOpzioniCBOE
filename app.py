@@ -109,6 +109,48 @@ st.caption(
     "ipotesi di modello e non rappresentano posizioni realmente osservate."
 )
 
+with st.expander("📖 Glossario dei termini (parti da qui se sei alle prime armi)", expanded=False):
+    st.markdown(
+        """
+**Le basi**
+- **Opzione** — contratto che dà il diritto (non l'obbligo) di comprare o vendere il sottostante a un prezzo fissato entro una data.
+- **Call / Put** — opzione che guadagna se il prezzo *sale* (call) o *scende* (put).
+- **Sottostante / Spot** — lo strumento su cui è scritta l'opzione (qui l'indice SPX) e il suo prezzo attuale.
+- **Strike** — il prezzo prefissato dell'opzione.
+- **Scadenza / DTE** — la data di scadenza; *DTE* = giorni che mancano ad essa (*Days To Expiry*).
+- **ITM / ATM / OTM** — opzione *dentro* i soldi (ha valore), *alla pari* (strike ≈ spot), *fuori* dai soldi (senza valore intrinseco).
+- **Moneyness** — quanto lo strike è lontano dallo spot (Strike ÷ Spot).
+
+**Chi muove il mercato**
+- **Dealer / Market maker** — chi fa i prezzi delle opzioni. Vende e compra opzioni al pubblico e, per non rischiare, copre ("hedgia") comprando/vendendo il sottostante. Questa copertura influenza i prezzi.
+- **Hedging** — l'operazione di copertura del rischio.
+
+**Attività e posizionamento**
+- **Open Interest (OI)** — numero di contratti *aperti* su uno strike: il posizionamento *accumulato*.
+- **Volume** — quanti contratti sono stati scambiati *oggi*.
+- **P/C Ratio** — rapporto put/call (di OI o volume): >1 = più put (difensivo), <1 = più call (ottimista).
+
+**Le "greche" (sensibilità dell'opzione)**
+- **Delta** — quanto si muove il prezzo dell'opzione se il sottostante si muove di 1 (≈ probabilità di finire ITM). Call: 0→+1; Put: −1→0.
+- **Gamma** — quanto cambia il *delta* quando il sottostante si muove: misura la "reattività" della copertura.
+- **Vanna** — quanto cambia il *delta* quando cambia la *volatilità*.
+
+**Le metriche di questa dashboard**
+- **GEX (Gamma Exposure)** — copertura gamma aggregata dei dealer. Dice se il mercato viene *frenato* (GEX positivo, "long gamma") o *amplificato* (GEX negativo, "short gamma").
+- **Gamma Flip / zero-gamma** — il prezzo che separa i due regimi: sopra = più stabile, sotto = più volatile. Fa spesso da **attrattore**.
+- **DEX / VEX** — esposizione aggregata di *delta* e *vanna* dell'open interest (posizionamento del mercato, non dei dealer). **Vanna Flip** = livello dove la VEX netta cambia segno.
+- **Put Wall / Call Wall** — strike con più OI vicino al prezzo: possibili **supporto** e **resistenza**, e calamite per il prezzo.
+- **Max Pain** — strike dove scadrebbero senza valore più opzioni: teorico punto di gravitazione a scadenza.
+- **Expected Move** — ampiezza di movimento attesa entro la scadenza (~68% di probabilità di restare nella banda).
+
+**Volatilità**
+- **Volatilità Implicita (IV)** — quanto movimento il mercato *si aspetta*, in % annualizzata. Non indica la direzione. Alta = opzioni care; bassa = opzioni economiche.
+- **Skew** — differenza di IV tra strike: di solito le put OTM costano di più (protezione al ribasso).
+- **Term structure** — come cambia la IV tra scadenze brevi e lunghe.
+- **Pinning** — tendenza del prezzo a "incollarsi" agli strike molto carichi verso la scadenza.
+        """
+    )
+
 # -----------------------------------------------------------------------------
 # 2. LOGICA DI CARICAMENTO E CACHING DEI DATI
 # -----------------------------------------------------------------------------
@@ -279,18 +321,18 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**Cosa mostra.** Una panoramica rapida della scadenza selezionata: le metriche chiave in alto e i tre grafici principali (Gamma, Open Interest, Volumi).
+**In parole semplici.** Un'opzione è un contratto che dà il diritto di comprare (*call*) o vendere (*put*) l'indice SPX a un prezzo prefissato (lo *strike*) entro una data (la *scadenza*). Chi vende molte opzioni — di solito i *market maker*, qui chiamati "dealer" — per non rischiare deve continuamente comprare e vendere SPX man mano che il prezzo si muove. Questo aggiustamento lascia tracce sul mercato: le metriche qui provano a stimarle. Questa è la schermata di riepilogo.
 
-**Come si legge.**
-- **Spot Price** — il prezzo corrente del sottostante (SPX), riferimento di tutto il resto.
-- **Net GEX** — il "clima" di volatilità atteso: **negativo (SHORT γ)** = i movimenti tendono ad essere *amplificati* (mercato più nervoso); **positivo (LONG γ)** = i movimenti tendono ad essere *smorzati* (mercato più tranquillo).
-- **Net VEX** — quanto il posizionamento reagisce a un cambio di volatilità implicita (+1%).
-- **Put Wall / Call Wall** — gli strike con la maggiore concentrazione di open interest *vicino al prezzo* (entro ±10%): possibili (non garantiti) freni sotto/sopra il mercato.
-- **Max Pain** — lo strike verso cui, in teoria, la scadenza tende a "gravitare".
+**Le caselle in alto.**
+- **Spot Price** — il prezzo attuale di SPX, il riferimento per tutto il resto.
+- **Net GEX** — il "clima" atteso: **negativo (SHORT γ)** = movimenti più *amplificati*, giornate nervose e direzionali; **positivo (LONG γ)** = movimenti *smorzati*, mercato più tranquillo e laterale.
+- **Net VEX** — quanto il posizionamento reagisce se la volatilità cambia dell'1%.
+- **Put Wall / Call Wall** — gli strike con più contratti aperti *vicino al prezzo*: possibili zone di **supporto** (sotto) e **resistenza** (sopra).
+- **Max Pain** — lo strike verso cui la scadenza tende teoricamente a "gravitare".
 
-**Cosa guardare nei grafici.** GEX: barre verdi (gamma positivo) / rosse (negativo) per strike. OI: call a destra, put a sinistra — cerca i "muri" più lunghi. Volumi: l'attività *di oggi* (dove si sta scambiando adesso).
+**Come usarla.** Guarda prima il **Net GEX**: se è positivo aspettati oscillazioni contenute e rimbalzi sui livelli; se è negativo aspettati movimenti più ampi e possibili accelerazioni. Poi osserva dove sono i **Wall** e il **Max Pain**: spesso il prezzo tende a restare "catturato" tra questi livelli, soprattutto avvicinandosi alla scadenza. Le altre tab spiegano ogni pezzo in dettaglio.
 
-**⚠️ Attenzione.** Sono letture basate su ipotesi di modello sul posizionamento, non certezze: usale come contesto, non come segnali operativi.
+**⚠️ Attenzione.** Sono stime basate su ipotesi di modello, non certezze né consigli operativi: usale come *contesto* insieme alla tua analisi.
                 """
             )
 
@@ -360,16 +402,20 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**Cosa mostra.** La **Gamma Exposure (GEX)** stima quanto gli operatori che coprono le opzioni (dealer) devono comprare o vendere il sottostante al variare del prezzo, e quindi il "regime" di volatilità.
+**In parole semplici.** Il *gamma* misura quanto rapidamente cambia la copertura che i dealer devono avere quando il prezzo si muove. Immagina che i dealer abbiano venduto molte opzioni: per restare neutrali ricomprano o rivendono SPX in continuazione. La **GEX** somma questa "spinta di copertura" su tutta la catena e ci dice se, nel complesso, i dealer **frenano** o **amplificano** i movimenti.
 
-**Come si legge.**
-- **Net GEX negativo (SHORT γ):** i dealer tendono a coprirsi *nella stessa direzione* del mercato → i movimenti vengono **amplificati** (più trend/volatilità).
-- **Net GEX positivo (LONG γ):** i dealer si coprono *contro* il movimento → i movimenti vengono **smorzati** (mercato più stabile, mean-reversion).
-- **Gamma Flip (γ=0):** il livello di prezzo dove il gamma netto dei dealer cambia segno. Sopra il Flip il regime tende ad essere stabilizzante, sotto tende ad essere amplificante. È il vero **zero-gamma**: si ricalcola il gamma netto ipotizzando lo spot a diversi livelli e si trova dove passa per zero (non è lo zero del singolo strike).
+**I due regimi.**
+- **LONG gamma (Net GEX positivo, prezzo SOPRA il Flip):** i dealer comprano quando il mercato scende e vendono quando sale → **frenano** il prezzo. Risultato: oscillazioni contenute, il mercato tende a tornare verso i livelli, i grandi cluster di gamma fanno da **supporto/resistenza** e da **calamita** (il prezzo viene "pinnato" lì, soprattutto verso scadenza).
+- **SHORT gamma (Net GEX negativo, prezzo SOTTO il Flip):** i dealer fanno il contrario, vendono sui ribassi e comprano sui rialzi → **amplificano**. Risultato: movimenti più ampi, trend che si autoalimentano, volatilità più alta.
 
-**Cosa guardare nel grafico.** Barre orizzontali per strike (verde = gamma positivo, rosso = negativo), linea **blu** = spot, linea **gialla tratteggiata** = Gamma Flip. La posizione dello spot rispetto al Flip ti dice in che regime sei.
+**Insight operativi.**
+- **Gamma Flip = spartiacque e attrattore.** È la soglia tra i due regimi: sopra, mercato "calmo"; sotto, mercato "esplosivo". Il prezzo tende a **gravitare** verso il Flip e verso i livelli molto carichi di gamma.
+- **Livelli ad alta GEX = supporti/resistenze *e* magneti.** Le barre più lunghe segnalano dove la copertura dei dealer è più intensa: lì il prezzo trova spesso freno e viene attratto.
+- **Rotture decise (breakout).** Se il prezzo *rompe con forza* un grande livello di gamma o scende **sotto il Flip**, l'effetto stabilizzante svanisce e si può passare a un "gamma unwind": i dealer, prima freno, ora inseguono il movimento → accelerazione rapida e volatilità in aumento. Le rotture al ribasso sotto il Flip sono le più violente.
 
-**⚠️ Attenzione.** Le barre del singolo strike vicino allo spot oscillano molto: il segnale affidabile è il **segno del Net GEX** e la posizione dello **spot rispetto al Flip**, non la singola barra. Convenzione dealer: long call / short put.
+**Cosa guardare nel grafico.** Barre per strike (verde = gamma positivo, rosso = negativo), linea **blu** = spot, linea **gialla tratteggiata** = Gamma Flip. Conta soprattutto *da che parte del Flip* sei e *dove* sono le barre più grandi.
+
+**⚠️ Attenzione.** Sono tendenze statistiche, non regole: i livelli possono essere attraversati. Le singole barre vicino allo spot oscillano molto; il segnale affidabile è il **segno del Net GEX** e la posizione dello **spot rispetto al Flip**. Convenzione dealer: long call / short put.
                 """
             )
 
@@ -405,13 +451,19 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**Cosa mostra.** Due esposizioni **aggregate dell'open interest** (non dei dealer):
-- **DEX (Delta Exposure):** il posizionamento direzionale netto dell'OI. **DEX > 0** = l'open interest è net-long delta (prevale il delta delle call, tono più rialzista); **DEX < 0** = net-short delta (prevale il delta delle put).
-- **VEX (Vanna Exposure):** come cambierebbe il delta aggregato dell'OI se la volatilità implicita salisse dell'1%. Il **Vanna Flip** è il livello di prezzo (zero-vanna, ricalcolato al variare dello spot) dove questa esposizione netta cambia segno.
+**In parole semplici.** Ogni opzione ha un *delta* (quanto guadagna/perde se SPX si muove di 1 punto) e una *vanna* (quanto cambia quel delta se la volatilità sale o scende). Qui li sommiamo su tutti i contratti aperti (*open interest*) per fotografare **come è posizionato il mercato**.
+
+- **DEX (Delta) — il posizionamento direzionale.** **DEX > 0** = tra i contratti aperti prevale il delta delle call → posizionamento con tono più **rialzista**; **DEX < 0** = prevale il delta delle put → tono più **ribassista/difensivo**.
+- **VEX (Vanna) — la sensibilità alla volatilità.** Ti dice come cambierebbe l'esposizione se la volatilità si muovesse. Il **Vanna Flip** è il prezzo che separa i due regimi.
+
+**Insight operativi.**
+- **La vanna è il motore dei "melt-up" a bassa volatilità.** Quando i mercati salgono lenti e la volatilità *scende*, la vanna tende a spingere altri acquisti di copertura → il rialzo si autoalimenta con poca volatilità. Al contrario, quando la volatilità *sale* (paura), lo stesso meccanismo si inverte e alimenta la discesa.
+- **Il Vanna Flip fa da spartiacque:** sopra e sotto, l'effetto della volatilità sul posizionamento cambia segno. Utile leggerlo *insieme* al Gamma Flip per capire il regime.
+- **DEX come conferma di contesto:** un DEX molto negativo con volatilità in aumento segnala un mercato coperto/difensivo; un DEX positivo con volatilità che scende accompagna spesso le fasi di risalita tranquilla.
 
 **Cosa guardare nei grafici.** Barre per strike; linea **blu** = spot; linea **gialla tratteggiata** (VEX) = Vanna Flip. Osserva dove si concentrano le barre più lunghe rispetto allo spot.
 
-**⚠️ Attenzione — importante.** A differenza della GEX, **DEX e VEX qui NON applicano una convenzione di segno "dealer"**: sono somme dell'esposizione dell'open interest. Non vanno quindi letti come "i dealer devono comprare/vendere", ma come **posizionamento aggregato dell'OI**. I segni non sono direttamente confrontabili con quelli della tab GEX.
+**⚠️ Attenzione — importante.** A differenza della GEX, **DEX e VEX qui NON applicano una convenzione di segno "dealer"**: sono somme dell'esposizione dell'open interest. Non vanno letti come "i dealer devono comprare/vendere", ma come **posizionamento aggregato del mercato**. I segni non sono direttamente confrontabili con quelli della tab GEX.
                 """
             )
 
@@ -492,16 +544,21 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**Cosa mostra.** Dove si concentrano i contratti aperti (**Open Interest**, il posizionamento *accumulato*) e i volumi (**l'attività di oggi**), più una sintesi della direzione dei volumi.
+**In parole semplici.** L'**Open Interest (OI)** è il numero di contratti *aperti* su ogni strike: è il posizionamento *accumulato* nel tempo. Il **Volume** è invece quanto si è scambiato *oggi*. Dove l'OI è enorme, i dealer hanno molta copertura da gestire proprio lì, e questo tende a influenzare il prezzo.
 
 **Come si legge.**
-- **Put Wall** — lo strike con più OI put *vicino al prezzo* (entro ±10%): possibile zona di **supporto**.
+- **Put Wall** — lo strike con più OI put *vicino al prezzo*: possibile zona di **supporto**.
 - **Call Wall** — lo strike con più OI call vicino al prezzo: possibile zona di **resistenza**.
 - **Grafici OI e Volumi** — call verso destra (positivo), put verso sinistra (negativo): le barre più lunghe sono i "muri".
-- **Sintesi Drift** — il baricentro dei volumi di oggi (call **e** put) rispetto allo spot: freccia a destra = tono rialzista, a sinistra = ribassista.
-- **Rapporto Vol/OI** — dove il volume di oggi ha superato l'OI esistente (>1.0): attività insolita, posizionamento *nuovo*.
+- **Sintesi Drift** — il baricentro dei volumi di oggi (call **e** put) rispetto allo spot: a destra = tono rialzista, a sinistra = ribassista.
+- **Rapporto Vol/OI** — dove il volume di oggi ha superato l'OI esistente (>1.0): posizionamento *nuovo*, non solo copertura di posizioni vecchie.
 
-**⚠️ Attenzione.** I Wall sono concentrazioni di OI, non muri garantiti: il prezzo può attraversarli. La ricerca è limitata a ±10% dallo spot proprio per non scambiare le coperture strutturali profondamente OTM per "supporti" operativi.
+**Insight operativi.**
+- **I Wall agiscono da supporto/resistenza *e* da calamita.** Un grande muro di OI genera copertura che tende a frenare il prezzo lì, e verso la scadenza lo **attrae** (il classico "pinning" attorno agli strike più carichi).
+- **Rottura decisa di un Wall.** Quando il prezzo attraversa con forza un grande muro, spesso **accelera**: la copertura che prima frenava si inverte e i trader riposizionano stop e hedge. Un supporto rotto diventa spesso resistenza (e viceversa).
+- **Vol/OI alto = attenzione.** Segnala che qualcuno sta aprendo *nuove* posizioni su quello strike proprio oggi: può anticipare l'importanza futura di quel livello.
+
+**⚠️ Attenzione.** I Wall sono concentrazioni di OI, non muri garantiti: il prezzo può attraversarli. La ricerca è limitata a ±10% dallo spot per non scambiare le coperture profondamente OTM per "supporti" operativi.
                 """
             )
 
@@ -556,16 +613,21 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**Cosa mostra.** Metriche di sentiment e statistiche di scadenza.
+**In parole semplici.** Tre indicatori di *sentiment* (come è orientato il mercato) e di *ampiezza attesa* del movimento.
 
 **Come si legge.**
-- **Max Pain** — lo strike che, a scadenza, farebbe scadere senza valore il maggior numero di opzioni: teorico "punto di gravitazione".
+- **Max Pain** — lo strike che, a scadenza, farebbe scadere senza valore il maggior numero di opzioni. In teoria è un "punto di gravitazione": chi ha venduto le opzioni ha interesse a che il prezzo finisca lì.
 - **P/C Ratio (OI e Volume)** — rapporto put/call. **> 1** = prevalenza di put (tono difensivo/ribassista); **< 1** = prevalenza di call (tono rialzista).
-- **Expected Move** — l'ampiezza di movimento attesa (≈1 deviazione standard, ~68% di probabilità) da qui alla scadenza, stimata dalla IV At-The-Money. Le due bande sono l'intervallo probabile.
+- **Expected Move** — quanto il mercato *si aspetta* che SPX si muova (in su o in giù) da qui alla scadenza: è ≈1 deviazione standard, cioè circa **68% di probabilità** di chiudere dentro le due bande. Stimato dalla volatilità implicita At-The-Money.
+
+**Insight operativi.**
+- **Max Pain come debole attrattore.** Avvicinandosi alla scadenza, il prezzo tende *statisticamente* a essere richiamato verso il Max Pain (per via dell'hedging di chi ha venduto le opzioni). È una tendenza leggera, non una regola: contano di più i Wall e il Gamma Flip.
+- **P/C ratio agli estremi = spunto contrarian.** Un P/C molto alto (troppa paura) o molto basso (troppo ottimismo) spesso precede un'inversione, non una continuazione.
+- **Expected Move = righello per aspettative e strike.** Le bande dicono dove il mercato "prezza" la chiusura probabile: utili per calibrare target e per scegliere strike. **Uscire dalle bande** con decisione segnala un movimento oltre l'atteso, di solito accompagnato da un aumento di volatilità.
 
 **Cosa guardare nel grafico.** Max Pain: il payout totale per strike; il **minimo** della curva è lo strike di Max Pain.
 
-**⚠️ Attenzione.** Max Pain è un riferimento teorico, non una previsione. L'Expected Move assume distribuzione lognormale e volatilità costante fino a scadenza: è una stima, non un limite garantito. Per lo 0DTE viene usato un minimo di 1 giorno, quindi a fine giornata può risultare sovrastimato.
+**⚠️ Attenzione.** Max Pain è teorico, non una previsione. L'Expected Move assume distribuzione lognormale e volatilità costante fino a scadenza: è una stima, non un limite garantito. Per lo 0DTE viene usato un minimo di 1 giorno, quindi a fine giornata può risultare sovrastimato.
                 """
             )
 
@@ -615,18 +677,30 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**Cosa mostra.** La **Volatilità Implicita (IV)** in 3D: asse X = giorni alla scadenza (DTE), asse Y = strike, altezza/colore = IV. Usa solo opzioni OTM (put sotto lo spot, call sopra).
+**In parole semplici.** La **Volatilità Implicita (IV)** è quanto movimento il mercato *si aspetta*, ricavato dal prezzo delle opzioni. Non indica la direzione, solo l'ampiezza attesa: IV alta = opzioni care e attese di grandi oscillazioni; IV bassa = opzioni economiche e attese di calma.
 
-**Come si legge.**
-- **Lungo gli strike (a scadenza fissa)** vedi lo **skew**: tipicamente le put OTM hanno IV più alta (la protezione al ribasso costa di più).
-- **Lungo l'asse DTE** vedi la **term structure**: come la IV cambia tra scadenze brevi e lunghe.
+**Come è misurata (importante).** La IV è una **volatilità annualizzata**, espressa in **percentuale**. Qui l'asse verticale è in %: **14%** significa che il mercato prezza una deviazione standard annua del ~14%. Valori estremi (100%+) compaiono solo sulle ali molto fuori-the-money, dove le opzioni sono illiquide e la IV è in gran parte *rumore*.
 
-**Cosa guardare.** Quanto è ripido lo skew (sale molto verso gli strike bassi = forte domanda di protezione) e se le scadenze brevi hanno IV più alta di quelle lunghe (stress) o più bassa (calma).
+**Filtro sul delta (lo slider sopra il grafico).** Per questo la superficie è filtrata per **delta**: lo slider **|Δ| minimo** esclude le opzioni troppo OTM (delta ~0, intradabili). Alza lo slider per una superficie più **vicina all'ATM e affidabile**; abbassalo (fino a 0.01) per vedere più ali. Il delta misura "quanto OTM" meglio della distanza in strike, perché tiene conto di tempo e volatilità.
 
-**⚠️ Attenzione.** È una superficie **interpolata** dai punti disponibili; le zone senza dati vengono riempite per continuità e sono meno affidabili ai bordi.
+**Il grafico.** Asse X = giorni alla scadenza (DTE), asse Y = strike, **altezza/colore = IV in %**. Usa solo opzioni OTM (put sotto lo spot, call sopra).
+
+**Insight operativi.**
+- **Skew (lungo gli strike):** di solito le put OTM hanno IV più alta delle call → il mercato paga la protezione al ribasso. Uno **skew ripido** indica nervosismo/domanda di copertura; uno skew piatto indica compiacenza.
+- **Term structure (lungo il DTE):** se le scadenze **brevi** hanno IV più alta delle lunghe (*backwardation*) c'è stress o un evento imminente; se le lunghe sono più alte (*contango*, situazione normale) il mercato è calmo.
+- **Uso pratico:** IV alta favorisce le strategie che *vendono* premio (con prudenza); IV bassa favorisce quelle che lo *comprano*. Confronta sempre con l'Expected Move nella tab Stats.
+
+**⚠️ Attenzione.** È una superficie **interpolata**: le zone senza dati vengono riempite per continuità e i bordi sono meno affidabili. La IV misura l'*ampiezza* attesa, non la direzione.
                 """
             )
 
+        min_delta = st.slider(
+            "Profondità OTM: |Δ| minimo mostrato",
+            min_value=0.01, max_value=0.40, value=0.05, step=0.01,
+            help="Filtra le opzioni per delta. 0.01 = mostra anche le ali profonde (più rumore); "
+                 "valori più alti = superficie più vicina all'ATM e più 'tradeable'. "
+                 "Le opzioni molto OTM (delta ~0) sono illiquide e con IV inaffidabile."
+        )
         with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
-            fig_vol_surf = create_volatility_surface_3d(df_processed)
+            fig_vol_surf = create_volatility_surface_3d(df_processed, min_delta=min_delta)
             st.plotly_chart(fig_vol_surf, width="stretch", key="vol_surface_chart")
