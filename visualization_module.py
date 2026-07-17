@@ -187,23 +187,28 @@ def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
 # -----------------------------------------------------------------------------
 # 6. VOLATILITY SURFACE 3D
 # -----------------------------------------------------------------------------
-def create_volatility_surface_3d(df_all_processed):
-    """Crea la superficie 3D della Volatilità Implicita (IV)."""
+def create_volatility_surface_3d(df_all_processed, min_delta=0.05):
+    """
+    Crea la superficie 3D della Volatilità Implicita (IV).
+
+    min_delta: soglia sul |Delta|. Tiene solo le opzioni con |Delta| >= min_delta,
+    escludendo le ali profondamente OTM (delta ~0) che sono illiquide, di fatto
+    intradabili e con IV quotata inaffidabile (picchi artificiali fino al 200-300%).
+    Il delta e' una misura di "quanto OTM" migliore della sola distanza in strike,
+    perche' tiene conto di tempo alla scadenza e volatilita'.
+    """
     try:
-        # OTM entro una fascia di moneyness +/-25%: gli strike molto piu' lontani hanno una IV
-        # quotata spesso inaffidabile (opzioni illiquide, prezzi stantii) che genera picchi
-        # artificiali fino al 200-300%. Restringere la fascia rende la superficie leggibile.
         df_surf_puts  = df_all_processed[(df_all_processed['Type'] == 'Put') &
-                                         (df_all_processed['Moneyness'] >= 0.75) &
-                                         (df_all_processed['Moneyness'] < 1.0)].copy()
+                                         (df_all_processed['Moneyness'] < 1.0) &
+                                         (df_all_processed['Delta'].abs() >= min_delta)].copy()
         df_surf_calls = df_all_processed[(df_all_processed['Type'] == 'Call') &
                                          (df_all_processed['Moneyness'] > 1.0) &
-                                         (df_all_processed['Moneyness'] <= 1.25)].copy()
+                                         (df_all_processed['Delta'].abs() >= min_delta)].copy()
         df_surf = pd.concat([df_surf_puts, df_surf_calls])
         # IV = volatilita' implicita annualizzata, frazione decimale (0.14 = 14%).
-        # Cap a 2.0 (200%) per tagliare il rumore residuo delle ali OTM a brevissima scadenza.
+        # Cap di sicurezza a 2.0 (200%) contro eventuali outlier residui.
         df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 2.00)]
-        df_surf = df_surf.dropna(subset=['IV', 'DTE_Days', 'Strike'])
+        df_surf = df_surf.dropna(subset=['IV', 'DTE_Days', 'Strike', 'Delta'])
         if len(df_surf) < 20:
             raise Exception("Dati OTM insufficienti.")
 
