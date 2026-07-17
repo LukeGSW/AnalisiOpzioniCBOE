@@ -1,63 +1,92 @@
 # File: calculations_module.py
 #
-# [VERSIONE v2 - CON DEX E VEX]
-# - FIX GEX: Ordinamento e logica "Flip più vicino".
-# - FIX DRIFT (VWAS): Call VWAS per isolare il target speculativo.
-# - NUOVO: calculate_dex_metrics (Delta Exposure Aggregata per Strike).
-# - NUOVO: calculate_vex_metrics (Vanna Exposure Aggregata per Strike + Switch Point).
+# [VERSIONE v3 - AUDIT KRITERION]
+# - Gamma/Vanna FLIP: zero-gamma/zero-vanna rigoroso (esposizione ricalcolata al variare
+#   dello spot), non lo zero-crossing per-strike (che cadeva banalmente sullo spot).
+# - DRIFT (VWAS): baricentro dei volumi call+put (simmetrico), non piu' solo-call.
+# - WALL: ricerca near-the-money (+/-10%) per non etichettare le coperture tail come supporti.
+# - DEX/VEX: esposizioni AGGREGATE dell'open interest (nessuna convenzione dealer),
+#   coerenti e onestamente etichettate; la GEX resta la metrica dealer (long-call/short-put).
 # -----------------------------------------------------------------------------
 
 import pandas as pd
 import numpy as np
+from scipy.stats import norm as _scipy_norm
 
 
 # =============================================================================
-# HELPER PRIVATO: Zero Crossing (interpolazione lineare)
+# HELPER PRIVATO: Flip Level rigoroso (esposizione ricalcolata al variare dello spot)
 # =============================================================================
-def _find_nearest_zero_crossing(df_sorted, value_col, spot_price):
+_RF_RATE   = 0.045    # risk-free rate
+_DIV_YIELD = 0.013    # dividend yield SPX (drift = r - q)
+_MIN_DTE   = 1.0 / 365.25
+
+
+def _exposure_curve_flip(df_selected_expiry, spot_price, greek, dealer_sign):
     """
-    Trova il punto di zero crossing più vicino allo spot (interpolazione lineare).
-    Usato sia per GEX Switch che per Vanna Switch.
+    Calcola il 'flip level' nel modo corretto: ricalcola l'esposizione netta (gamma o
+    vanna) su una griglia di prezzi IPOTETICI del sottostante e trova il livello dove
+    l'esposizione netta attraversa lo zero (il piu' vicino allo spot).
+
+    Questa e' la definizione standard del 'zero-gamma / gamma flip' (e analogo per la
+    vanna): il PREZZO al quale il gamma netto dei dealer cambia segno. NON coincide con
+    lo zero-crossing del profilo statico per-strike (che oscilla e cade banalmente sullo
+    spot) ne' con la sua somma cumulata (che per un book net-short-gamma puo' non
+    attraversare mai lo zero).
 
     Args:
-        df_sorted  : DataFrame ordinato per Strike con colonna di valori.
-        value_col  : Nome della colonna numerica da analizzare.
-        spot_price : Prezzo corrente del sottostante.
+        df_selected_expiry : righe di opzioni della scadenza (Strike, IV, DTE_Years, OI, Type).
+        spot_price         : prezzo corrente del sottostante.
+        greek              : 'gamma' oppure 'vanna'.
+        dealer_sign        : True  -> convenzione dealer (call +, put -), usata per il Gamma Flip.
+                             False -> esposizione aggregata dell'OI (nessun segno), per il Vanna Flip.
 
     Returns:
-        float | None: Strike interpolato dello zero crossing, o None se non trovato.
+        float | None: livello interpolato del flip, o None se non trovato nel range +/-20%.
     """
     try:
-        if df_sorted.empty or len(df_sorted) < 2:
+        d = df_selected_expiry[
+            (df_selected_expiry['IV'] > 0.001) &
+            (df_selected_expiry['DTE_Years'] > 0) &
+            (df_selected_expiry['Strike'] > 0) &
+            (df_selected_expiry['OI'] > 0)
+        ]
+        if len(d) < 2 or spot_price is None or not np.isfinite(spot_price) or spot_price <= 0:
             return None
 
-        signs = np.sign(df_sorted[value_col])
-        # Identifica dove il segno cambia tra una riga e la successiva
-        sign_change = (signs != signs.shift(-1)) & (signs.shift(-1).notna())
-        flip_indices = df_sorted.index[sign_change]
+        K     = d['Strike'].to_numpy(dtype=float)
+        T     = np.maximum(d['DTE_Years'].to_numpy(dtype=float), _MIN_DTE)
+        sigma = d['IV'].to_numpy(dtype=float)
+        OI    = d['OI'].to_numpy(dtype=float)
+        sqrtT = np.sqrt(T)
+        sgn   = np.where(d['Type'].to_numpy() == 'Call', 1.0, -1.0) if dealer_sign else np.ones(len(d))
+
+        S_grid = np.linspace(spot_price * 0.80, spot_price * 1.20, 161)
+        curve  = np.empty(len(S_grid))
+        for j, S in enumerate(S_grid):
+            d1 = (np.log(S / K) + (_RF_RATE - _DIV_YIELD + 0.5 * sigma ** 2) * T) / (sigma * sqrtT)
+            if greek == 'gamma':
+                g        = _scipy_norm.pdf(d1) / (S * sigma * sqrtT)
+                notional = g * OI * 100.0 * (S ** 2) * 0.01
+            else:  # vanna
+                d2       = d1 - sigma * sqrtT
+                g        = -_scipy_norm.pdf(d1) * d2 / sigma
+                notional = g * OI * 100.0 * S * 0.01
+            curve[j] = np.nansum(sgn * notional)
 
         candidates = []
-        for idx in flip_indices:
-            pos = df_sorted.index.get_loc(idx)
-            if pos + 1 >= len(df_sorted):
-                continue
-            row_curr = df_sorted.iloc[pos]
-            row_next = df_sorted.iloc[pos + 1]
+        for i in range(len(S_grid) - 1):
+            y0, y1 = curve[i], curve[i + 1]
+            if (y0 < 0 < y1) or (y0 > 0 > y1):
+                x0, x1 = S_grid[i], S_grid[i + 1]
+                candidates.append(float(x0 - (y0 * (x1 - x0) / (y1 - y0))))
 
-            x0, y0 = row_curr['Strike'], row_curr[value_col]
-            x1, y1 = row_next['Strike'], row_next[value_col]
-
-            if (y1 - y0) != 0:
-                zero_cross = x0 - (y0 * (x1 - x0) / (y1 - y0))
-                candidates.append(zero_cross)
-
-        if candidates:
-            # Ritorna il flip point più vicino allo spot attuale
-            return min(candidates, key=lambda x: abs(x - spot_price))
-        return None
+        if not candidates:
+            return None
+        return min(candidates, key=lambda x: abs(x - spot_price))
 
     except Exception as e:
-        print(f"[_find_nearest_zero_crossing]: {e}")
+        print(f"[_exposure_curve_flip:{greek}]: {e}")
         return None
 
 
@@ -67,14 +96,16 @@ def _find_nearest_zero_crossing(df_sorted, value_col, spot_price):
 def calculate_gex_metrics(df_selected_expiry, spot_price):
     """
     Calcola le metriche GEX per una singola scadenza.
-    Trova il Gamma Switch Point più vicino al prezzo attuale.
+    Il Gamma Flip e' il livello zero-gamma (esposizione ricalcolata al variare dello spot).
     """
     df_gex_strike = df_selected_expiry.groupby('Strike')['GEX_Signed'].sum().reset_index()
     df_gex_strike.rename(columns={'GEX_Signed': 'Net_GEX'}, inplace=True)
     df_gex_strike = df_gex_strike.sort_values('Strike').reset_index(drop=True)
 
     total_net_gex      = df_gex_strike['Net_GEX'].sum()
-    gamma_switch_local = _find_nearest_zero_crossing(df_gex_strike, 'Net_GEX', spot_price)
+    # Gamma Flip = livello (zero-gamma) dove il gamma netto dei dealer, ricalcolato al variare
+    # dello spot, cambia segno. Convenzione dealer: call +, put -.
+    gamma_switch_local = _exposure_curve_flip(df_selected_expiry, spot_price, 'gamma', dealer_sign=True)
     spot_delta         = (spot_price - gamma_switch_local) if gamma_switch_local is not None else None
 
     return {
@@ -89,7 +120,14 @@ def calculate_gex_metrics(df_selected_expiry, spot_price):
 # 2. OPEN INTEREST WALLS
 # =============================================================================
 def calculate_oi_walls(df_selected_expiry, spot_price):
-    """Calcola i Put/Call Walls per una singola scadenza."""
+    """
+    Calcola i Put/Call Walls per una singola scadenza.
+
+    Il PROFILO OI viene mostrato su una fascia ampia (+/-25%), ma i WALL (max OI)
+    vengono cercati SOLO vicino al prezzo (+/-10%): cosi' si evita di segnalare come
+    'supporto' le put strutturali di copertura tail profondamente OTM (es. -20%),
+    che non sono livelli operativi di supporto/resistenza intraday.
+    """
     range_lower = spot_price * 0.75
     range_upper = spot_price * 1.25
     df_oi_relevant = df_selected_expiry[
@@ -97,14 +135,22 @@ def calculate_oi_walls(df_selected_expiry, spot_price):
         (df_selected_expiry['Strike'] <= range_upper)
     ]
 
-    oi_puts_support  = df_oi_relevant[(df_oi_relevant['Type'] == 'Put')  & (df_oi_relevant['Strike'] <= spot_price)]
+    # Fascia stretta near-the-money per la ricerca dei wall.
+    wall_lower = spot_price * 0.90
+    wall_upper = spot_price * 1.10
+    df_wall_zone = df_oi_relevant[
+        (df_oi_relevant['Strike'] >= wall_lower) &
+        (df_oi_relevant['Strike'] <= wall_upper)
+    ]
+
+    oi_puts_support  = df_wall_zone[(df_wall_zone['Type'] == 'Put')  & (df_wall_zone['Strike'] <= spot_price)]
     put_wall_strike, max_put_oi = (None, 0)
     if not oi_puts_support.empty:
         idx_max         = oi_puts_support['OI'].idxmax()
         put_wall_strike = oi_puts_support.loc[idx_max]['Strike']
         max_put_oi      = oi_puts_support['OI'].max()
 
-    oi_calls_res     = df_oi_relevant[(df_oi_relevant['Type'] == 'Call') & (df_oi_relevant['Strike'] >= spot_price)]
+    oi_calls_res     = df_wall_zone[(df_wall_zone['Type'] == 'Call') & (df_wall_zone['Strike'] >= spot_price)]
     call_wall_strike, max_call_oi = (None, 0)
     if not oi_calls_res.empty:
         idx_max          = oi_calls_res['OI'].idxmax()
@@ -170,9 +216,14 @@ def calculate_expected_move(df_selected_expiry, spot_price):
         atm_strike_index = (df_selected_expiry['Strike'] - spot_price).abs().idxmin()
         atm_strike_val   = df_selected_expiry.loc[atm_strike_index]['Strike']
         df_atm           = df_selected_expiry[df_selected_expiry['Strike'] == atm_strike_val]
-        iv_atm           = df_atm['IV'].mean()
+        # Media solo delle IV valide (>0): una IV mancante (NaN) o 0 non deve dimezzare il valore.
+        iv_series        = df_atm.loc[df_atm['IV'] > 0, 'IV']
+        if iv_series.empty:
+            return {'move': None, 'upper_band': None, 'lower_band': None, 'iv_atm': None}
+        iv_atm           = iv_series.mean()
         dte_years        = df_atm['DTE_Years'].iloc[0]
-        if dte_years <= 0:
+        # 'not (dte_years > 0)' cattura anche NaN e lo 0DTE (floor a 1 giorno di calendario).
+        if not (dte_years > 0):
             dte_years = 1 / 365.25
         move = spot_price * iv_atm * np.sqrt(dte_years)
         return {'move': move, 'upper_band': spot_price + move, 'lower_band': spot_price - move, 'iv_atm': iv_atm}
@@ -206,9 +257,10 @@ def calculate_activity_ratio(df_selected_expiry, spot_price):
     """
     Calcola il rapporto Vol/OI e il 'Drift Score' (VWAS).
 
-    Il Drift Score calcola il VWAS (Volume Weighted Average Strike)
-    SOLO DELLE CALL per identificare il 'Target Speculativo' eliminando
-    il rumore delle Put difensive OTM.
+    Il Drift Score e' il VWAS (Volume-Weighted Average Strike) calcolato su
+    TUTTO il volume di giornata (call + put) nella fascia +/-25% dallo spot.
+    E' simmetrico rispetto allo spot: se il baricentro dei volumi e' sopra lo
+    spot indica bias rialzista, se e' sotto indica bias ribassista.
     """
     range_lower = spot_price * 0.75
     range_upper = spot_price * 1.25
@@ -228,12 +280,12 @@ def calculate_activity_ratio(df_selected_expiry, spot_price):
     df_profile['Put_Activity_Ratio']      = df_profile['Put_Vol']  / (df_profile['Put_OI']  + 1)
     df_profile['Put_Activity_Ratio_Neg']  = df_profile['Put_Activity_Ratio'] * -1.0
 
-    calls_only     = df_relevant[df_relevant['Type'] == 'Call']
-    total_call_vol = calls_only['Vol'].sum()
-
-    if total_call_vol > 0:
-        call_vol_by_strike = calls_only.groupby('Strike')['Vol'].sum()
-        drift_score = (call_vol_by_strike.index * call_vol_by_strike).sum() / call_vol_by_strike.sum()
+    # Drift Score = VWAS su TUTTO il volume (call + put): baricentro simmetrico rispetto allo spot,
+    # quindi capace di risultare sia sopra (rialzista) sia sotto (ribassista).
+    total_vol = df_relevant['Vol'].sum()
+    if total_vol > 0:
+        vol_by_strike = df_relevant.groupby('Strike')['Vol'].sum()
+        drift_score = (vol_by_strike.index * vol_by_strike).sum() / vol_by_strike.sum()
     else:
         drift_score = spot_price
 
@@ -250,10 +302,12 @@ def calculate_dex_metrics(df_selected_expiry, spot_price):
     """
     Calcola la Delta Exposure (DEX) aggregata per Strike.
 
-    La DEX Nozionale rappresenta la sensitività netta del book di opzioni
-    a una variazione del Prezzo del Sottostante. Un DEX netto positivo
-    indica che i dealers hanno bisogno di vendere il sottostante per
-    rimanere delta-hedged; un DEX netto negativo indica acquisti necessari.
+    La DEX Nozionale e' la somma di Delta * OI * 100 * Spot sull'open interest
+    (call con delta positivo, put con delta negativo). Misura il POSIZIONAMENTO
+    DIREZIONALE NETTO dell'open interest, NON l'esposizione dei dealer (nessuna
+    ipotesi di segno dealer viene applicata, a differenza della GEX):
+    - DEX netto positivo  = OI net-long delta (prevale il delta delle call);
+    - DEX netto negativo  = OI net-short delta (prevale il delta delle put).
 
     Formula applicata in data_module.py:
         DEX_Notional = Delta * OI * 100 * Spot
@@ -283,22 +337,19 @@ def calculate_vex_metrics(df_selected_expiry, spot_price):
     """
     Calcola la Vanna Exposure (VEX) aggregata per Strike.
 
-    La VEX Nozionale rappresenta la sensitività del Delta dei dealers
-    rispetto a una variazione dell'1% della Volatilità Implicita.
-
-    Interpretazione operativa:
-    - VEX netto positivo a un certo strike: se la volatilità SCENDE,
-      i dealers devono COMPRARE il sottostante in quel nodo (effetto
-      supporto dei prezzi in regime di vol compressa).
-    - VEX netto negativo: se la volatilità SCENDE, i dealers devono
-      VENDERE (effetto pressione ribassista in certi nodi).
+    La VEX Nozionale e' la somma di Vanna * OI * 100 * Spot * 1% sull'open interest.
+    Misura come varia il delta AGGREGATO dell'open interest per una variazione di
+    +1% della Volatilita' Implicita. E' un'esposizione aggregata dell'OI, NON dei
+    dealer (nessuna ipotesi di segno dealer applicata, come per la DEX):
+    - VEX netto positivo a uno strike: il delta aggregato dell'OI aumenta se la vol sale
+      (e diminuisce se la vol scende);
+    - VEX netto negativo: il delta aggregato diminuisce se la vol sale.
 
     Formula applicata in data_module.py:
         VEX_Notional = Vanna_BS * OI * 100 * Spot * 0.01
 
-    Il "Vanna Switch Point" è lo strike dove il profilo VEX netto
-    attraversa lo zero (calcolato via interpolazione lineare, stessa
-    logica del Gamma Switch Point).
+    Il "Vanna Flip" e' il livello di prezzo (zero-vanna, ricalcolato al variare
+    dello spot) dove la vanna netta aggregata cambia segno (stessa logica del Gamma Flip).
 
     Returns:
         dict con:
@@ -313,8 +364,9 @@ def calculate_vex_metrics(df_selected_expiry, spot_price):
 
     total_net_vex = df_vex_strike['Net_VEX'].sum()
 
-    # Vanna Switch Point: zero crossing più vicino allo spot (stessa logica del GEX)
-    vanna_switch_point = _find_nearest_zero_crossing(df_vex_strike, 'Net_VEX', spot_price)
+    # Vanna Flip: livello dove la vanna netta aggregata dell'OI, ricalcolata al variare
+    # dello spot, cambia segno (nessuna convenzione dealer, coerente con la VEX aggregata).
+    vanna_switch_point = _exposure_curve_flip(df_selected_expiry, spot_price, 'vanna', dealer_sign=False)
 
     return {
         'df_vex_profile':    df_vex_strike,
