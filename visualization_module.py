@@ -190,12 +190,19 @@ def create_max_pain_chart(df_payouts, max_pain_strike, expiry_label):
 def create_volatility_surface_3d(df_all_processed):
     """Crea la superficie 3D della Volatilità Implicita (IV)."""
     try:
-        df_surf_puts  = df_all_processed[(df_all_processed['Type'] == 'Put')  & (df_all_processed['Moneyness'] < 1.0)].copy()
-        df_surf_calls = df_all_processed[(df_all_processed['Type'] == 'Call') & (df_all_processed['Moneyness'] > 1.0)].copy()
+        # OTM entro una fascia di moneyness +/-25%: gli strike molto piu' lontani hanno una IV
+        # quotata spesso inaffidabile (opzioni illiquide, prezzi stantii) che genera picchi
+        # artificiali fino al 200-300%. Restringere la fascia rende la superficie leggibile.
+        df_surf_puts  = df_all_processed[(df_all_processed['Type'] == 'Put') &
+                                         (df_all_processed['Moneyness'] >= 0.75) &
+                                         (df_all_processed['Moneyness'] < 1.0)].copy()
+        df_surf_calls = df_all_processed[(df_all_processed['Type'] == 'Call') &
+                                         (df_all_processed['Moneyness'] > 1.0) &
+                                         (df_all_processed['Moneyness'] <= 1.25)].copy()
         df_surf = pd.concat([df_surf_puts, df_surf_calls])
-        # Cap IV a 3.0 (non 1.5): le put OTM a brevissima scadenza superano spesso il 150%
-        # e vanno mostrate, altrimenti lo skew viene tagliato proprio dove e' informativo.
-        df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 3.00)]
+        # IV = volatilita' implicita annualizzata, frazione decimale (0.14 = 14%).
+        # Cap a 2.0 (200%) per tagliare il rumore residuo delle ali OTM a brevissima scadenza.
+        df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 2.00)]
         df_surf = df_surf.dropna(subset=['IV', 'DTE_Days', 'Strike'])
         if len(df_surf) < 20:
             raise Exception("Dati OTM insufficienti.")
@@ -208,19 +215,21 @@ def create_volatility_surface_3d(df_all_processed):
         # Riempi i buchi (NaN fuori dall'inviluppo convesso) con 'nearest': niente fori fuorvianti.
         Z_near = griddata(pts, df_surf['IV'], (X_grid, Y_grid), method='nearest')
         Z_grid = np.where(np.isnan(Z_lin), Z_near, Z_lin)
+        # IV in PERCENTUALE per leggibilita' (0.14 -> 14%): l'asse mostra 20, 40, 60... non 0.2, 0.4.
+        Z_grid_pct = Z_grid * 100.0
 
         fig = go.Figure()
         fig.add_trace(go.Surface(
-            x=X_grid, y=Y_grid, z=Z_grid,
-            colorscale='Viridis', colorbar_title='Implied Volatility',
+            x=X_grid, y=Y_grid, z=Z_grid_pct,
+            colorscale='Viridis', colorbar_title='IV (%)',
             name="IV Surface",
-            hovertemplate="<b>DTE: %{x:.0f}</b><br>Strike: %{y:.0f}<br>IV: %{z:.2%}<extra></extra>"
+            hovertemplate="<b>DTE: %{x:.0f} gg</b><br>Strike: %{y:.0f}<br>IV: %{z:.1f}%<extra></extra>"
         ))
         fig = apply_kriterion_theme(fig)
         fig.update_layout(
             title="Superficie di Volatilità Implicita (IV) - OTM (Tutte le Scadenze)",
             scene=dict(
-                xaxis_title='Days to Expiry (DTE)', yaxis_title='Strike Price', zaxis_title='Implied Volatility (IV)',
+                xaxis_title='Days to Expiry (DTE)', yaxis_title='Strike Price', zaxis_title='Implied Volatility (%)',
                 xaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
                 yaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
                 zaxis=dict(gridcolor=KRITERION_THEME['gridcolor']),
