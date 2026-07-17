@@ -13,6 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 import datetime as dt
 import json
+import math
 
 # --- Importa i nostri moduli custom ---
 from data_module import parse_cboe_csv
@@ -61,6 +62,21 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 
+def _sanitize_nan(obj):
+    """
+    Sostituisce NaN/Inf con None (JSON 'null') in modo ricorsivo.
+    Lo standard JSON non ammette NaN: senza questo, l'export 'LLM Ready'
+    conterrebbe token `NaN` e verrebbe rifiutato da JSON.parse / jq / ecc.
+    """
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_nan(v) for v in obj]
+    if isinstance(obj, float):  # np.float64 e' sottoclasse di float -> coperto
+        return obj if math.isfinite(obj) else None
+    return obj
+
+
 # -----------------------------------------------------------------------------
 # 1. IMPOSTAZIONE PAGINA E TEMA
 # -----------------------------------------------------------------------------
@@ -85,6 +101,13 @@ st.markdown("""
 
 st.title("📊 SPX Options Chain Analyzer")
 st.markdown("Powered by **Kriterion Quant**")
+st.caption(
+    "⚠️ **Solo a scopo informativo/educativo — NON è consulenza finanziaria.** "
+    "Spot, timestamp e scadenze sono estratti dal CSV caricato e possono essere non aggiornati "
+    "o errati: verificali sempre in autonomia. Nessuna garanzia sui risultati. "
+    "Le letture su posizionamento (GEX/DEX/VEX, Gamma/Vanna Flip, Walls) si basano su "
+    "ipotesi di modello e non rappresentano posizioni realmente osservate."
+)
 
 # -----------------------------------------------------------------------------
 # 2. LOGICA DI CARICAMENTO E CACHING DEI DATI
@@ -97,7 +120,8 @@ def load_data(uploaded_file):
             return None, None, None
         return df_processed, spot_price, data_timestamp
     except Exception as e:
-        st.error(f"Errore irreversibile durante il parsing: {e}")
+        st.error("Errore irreversibile durante il parsing del file. Verifica che sia un CSV CBOE valido.")
+        print(f"[app.load_data] {e}")
         return None, None, None
 
 
@@ -111,18 +135,27 @@ else:
 # -----------------------------------------------------------------------------
 # 3. CORPO PRINCIPALE DELL'APP
 # -----------------------------------------------------------------------------
-if df_processed is not None and spot_price is not None:
+if df_processed is not None and spot_price is not None and np.isfinite(spot_price) and spot_price > 0:
 
     # --- 3.1. Barra dei Controlli (Selettore Scadenza) ---
-    unique_expirations = sorted(df_processed['Expiration Date'].unique())
-    expiry_options_map = {date.strftime('%Y-%m-%d (%a)'): date for date in unique_expirations}
+    # Etichetta scadenza deterministica (weekday inglese, indipendente dal locale del server).
+    _WEEKDAYS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    def _expiry_label(d):
+        ts = pd.Timestamp(d)
+        return f"{ts.strftime('%Y-%m-%d')} ({_WEEKDAYS_EN[ts.weekday()]})"
+
+    unique_expirations = sorted(df_processed['Expiration Date'].dropna().unique())
+    expiry_options_map = {_expiry_label(date): date for date in unique_expirations}
 
     if not expiry_options_map:
         st.error("Nessuna scadenza valida trovata nel file.")
         st.stop()
 
-    df_expiry_oi         = df_processed.groupby('Expiration Date')['OI'].sum()
-    default_expiry_label = df_expiry_oi.idxmax().strftime('%Y-%m-%d (%a)')
+    df_expiry_oi = df_processed.dropna(subset=['Expiration Date']).groupby('Expiration Date')['OI'].sum()
+    if df_expiry_oi.empty:
+        st.error("Impossibile interpretare le date di scadenza dal file.")
+        st.stop()
+    default_expiry_label = _expiry_label(df_expiry_oi.idxmax())
 
     selected_expiry_label = st.selectbox(
         'Seleziona la Scadenza:', options=expiry_options_map.keys(),
@@ -155,7 +188,18 @@ if df_processed is not None and spot_price is not None:
             "export_date":         dt.datetime.now().isoformat(),
             "analyzed_expiry":     selected_expiry_label,
             "spot_price":          spot_price,
-            "data_timestamp_file": str(data_timestamp)
+            "data_timestamp_file": str(data_timestamp),
+            "disclaimer": (
+                "Solo a scopo informativo/educativo, non consulenza finanziaria. "
+                "GEX usa la convenzione dealer long-call/short-put (segno put invertito). "
+                "DEX e VEX sono esposizioni aggregate dell'open interest (delta/vanna per OI), "
+                "NON esposizioni dei dealer: misurano il posizionamento direzionale/di vanna "
+                "dell'OI, non 'cosa devono fare i dealer'. 'Gamma Flip' e 'Vanna Flip' sono i livelli "
+                "di prezzo dove l'esposizione netta gamma/vanna, ricalcolata al variare dello spot, "
+                "cambia segno (zero-gamma level). I 'Wall' sono le "
+                "massime concentrazioni di OI entro +/-10% dallo spot (possibili, non garantiti, "
+                "livelli di supporto/resistenza)."
+            )
         },
         "market_summary": {
             "max_pain":               max_pain_strike,
@@ -178,9 +222,9 @@ if df_processed is not None and spot_price is not None:
             "dex_profile_data":      dex_metrics['df_dex_profile'].to_dict(orient='records')
         },
         "vanna_analysis": {
-            # VEX totale per la scadenza: sensitività aggregata a una variazione +1% di vol
+            # VEX totale: esposizione vanna aggregata dell'OI a una variazione +1% di vol
             "total_net_vex":         vex_metrics['total_net_vex'],
-            # Switch Point: strike dove il regime di hedging dei dealers cambia segno
+            # Vanna Flip: livello (zero-vanna, ricalcolato al variare dello spot) dove la vanna netta cambia segno
             "vanna_switch_point":    vex_metrics.get('vanna_switch_point', None),
             # Profilo completo per strike
             "vex_profile_data":      vex_metrics['df_vex_profile'].to_dict(orient='records')
@@ -200,7 +244,7 @@ if df_processed is not None and spot_price is not None:
         }
     }
 
-    json_string = json.dumps(export_data, cls=NumpyEncoder, indent=4)
+    json_string = json.dumps(_sanitize_nan(export_data), cls=NumpyEncoder, indent=4)
 
     # --- 3.4. Architettura Tab (6 tab) ---
     tab_summary, tab_gex, tab_vex_dex, tab_oi_vol, tab_stats, tab_vol_surf = st.tabs([
@@ -232,28 +276,51 @@ if df_processed is not None and spot_price is not None:
     with tab_summary:
         st.header(f"Executive Summary per {selected_expiry_label}")
 
+        with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
+            st.markdown(
+                """
+**Cosa mostra.** Una panoramica rapida della scadenza selezionata: le metriche chiave in alto e i tre grafici principali (Gamma, Open Interest, Volumi).
+
+**Come si legge.**
+- **Spot Price** — il prezzo corrente del sottostante (SPX), riferimento di tutto il resto.
+- **Net GEX** — il "clima" di volatilità atteso: **negativo (SHORT γ)** = i movimenti tendono ad essere *amplificati* (mercato più nervoso); **positivo (LONG γ)** = i movimenti tendono ad essere *smorzati* (mercato più tranquillo).
+- **Net VEX** — quanto il posizionamento reagisce a un cambio di volatilità implicita (+1%).
+- **Put Wall / Call Wall** — gli strike con la maggiore concentrazione di open interest *vicino al prezzo* (entro ±10%): possibili (non garantiti) freni sotto/sopra il mercato.
+- **Max Pain** — lo strike verso cui, in teoria, la scadenza tende a "gravitare".
+
+**Cosa guardare nei grafici.** GEX: barre verdi (gamma positivo) / rosse (negativo) per strike. OI: call a destra, put a sinistra — cerca i "muri" più lunghi. Volumi: l'attività *di oggi* (dove si sta scambiando adesso).
+
+**⚠️ Attenzione.** Sono letture basate su ipotesi di modello sul posizionamento, non certezze: usale come contesto, non come segnali operativi.
+                """
+            )
+
         st.subheader("Key Metrics Grid (per la scadenza selezionata)")
         col1, col2, col3, col4, col5, col6 = st.columns(6)
 
         col1.metric(label="Spot Price", value=f"{spot_price:.2f}")
+        _net_gex_b = gex_metrics['total_net_gex'] / 1_000_000_000
         col2.metric(
             label="Net GEX (Scadenza)",
-            value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B",
-            delta="SHORT γ" if gex_metrics['total_net_gex'] < 0 else "LONG γ",
-            delta_color="inverse"
+            value=f"${_net_gex_b:.2f} B",
+            # Delta numerico con segno: cosi' colore e freccia seguono il segno (SHORT vs LONG gamma)
+            delta=f"{_net_gex_b:+.2f} B ({'SHORT γ' if _net_gex_b < 0 else 'LONG γ'})",
+            delta_color="inverse",
+            help="Negativo = dealers SHORT gamma (regime destabilizzante); positivo = LONG gamma (stabilizzante)."
         )
         col3.metric(
             label="Net VEX (Scadenza)",
             value=f"${vex_metrics['total_net_vex'] / 1_000_000:.2f} M",
-            help="Sensitività del Delta dei dealers a una variazione +1% della Volatilità Implicita."
+            help="Esposizione aggregata dell'open interest a una variazione +1% della Volatilità Implicita (non è esposizione dei dealer)."
         )
         col4.metric(
-            label="🛡️ Put Wall (Supporto)",
-            value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A"
+            label="🛡️ Put Wall",
+            value=f"{oi_metrics['put_wall_strike']:.0f}" if oi_metrics['put_wall_strike'] else "N/A",
+            help="Strike con max OI put entro ±10% dallo spot: possibile (non garantito) supporto."
         )
         col5.metric(
-            label="🛑 Call Wall (Resistenza)",
-            value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A"
+            label="🛑 Call Wall",
+            value=f"{oi_metrics['call_wall_strike']:.0f}" if oi_metrics['call_wall_strike'] else "N/A",
+            help="Strike con max OI call entro ±10% dallo spot: possibile (non garantita) resistenza."
         )
         col6.metric(
             label="📍 Max Pain",
@@ -289,15 +356,38 @@ if df_processed is not None and spot_price is not None:
     # =================================================================
     with tab_gex:
         st.header(f"Analisi Gamma (GEX) per {selected_expiry_label}")
+
+        with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
+            st.markdown(
+                """
+**Cosa mostra.** La **Gamma Exposure (GEX)** stima quanto gli operatori che coprono le opzioni (dealer) devono comprare o vendere il sottostante al variare del prezzo, e quindi il "regime" di volatilità.
+
+**Come si legge.**
+- **Net GEX negativo (SHORT γ):** i dealer tendono a coprirsi *nella stessa direzione* del mercato → i movimenti vengono **amplificati** (più trend/volatilità).
+- **Net GEX positivo (LONG γ):** i dealer si coprono *contro* il movimento → i movimenti vengono **smorzati** (mercato più stabile, mean-reversion).
+- **Gamma Flip (γ=0):** il livello di prezzo dove il gamma netto dei dealer cambia segno. Sopra il Flip il regime tende ad essere stabilizzante, sotto tende ad essere amplificante. È il vero **zero-gamma**: si ricalcola il gamma netto ipotizzando lo spot a diversi livelli e si trova dove passa per zero (non è lo zero del singolo strike).
+
+**Cosa guardare nel grafico.** Barre orizzontali per strike (verde = gamma positivo, rosso = negativo), linea **blu** = spot, linea **gialla tratteggiata** = Gamma Flip. La posizione dello spot rispetto al Flip ti dice in che regime sei.
+
+**⚠️ Attenzione.** Le barre del singolo strike vicino allo spot oscillano molto: il segnale affidabile è il **segno del Net GEX** e la posizione dello **spot rispetto al Flip**, non la singola barra. Convenzione dealer: long call / short put.
+                """
+            )
+
         col1, col2, col3 = st.columns(3)
-        col1.metric(label="Net GEX", value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B")
+        col1.metric(
+            label="Net GEX",
+            value=f"${gex_metrics['total_net_gex'] / 1_000_000_000:.2f} B",
+            help="Somma dell'esposizione gamma dei dealer (convenzione long-call/short-put)."
+        )
         col2.metric(
-            label="Gamma Switch Point",
-            value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] else "N/A"
+            label="Gamma Flip (γ=0)",
+            value=f"{gex_metrics['gamma_switch_point']:.2f}" if gex_metrics['gamma_switch_point'] is not None else "N/A",
+            help="Zero-gamma: livello dove il gamma netto dei dealer (ricalcolato al variare dello spot) cambia segno."
         )
         col3.metric(
-            label="Spot-Switch Delta",
-            value=f"{gex_metrics['spot_switch_delta']:.2f}" if gex_metrics['spot_switch_delta'] else "N/A"
+            label="Spot − Gamma Flip",
+            value=f"{gex_metrics['spot_switch_delta']:+.2f}" if gex_metrics['spot_switch_delta'] is not None else "N/A",
+            help="Distanza dello spot dal Gamma Flip. >0 = spot sopra il flip (tipicamente regime long-gamma)."
         )
         # Riusa la figura GEX già costruita nel tab Summary
         fig_gex_tab = create_gex_profile_chart(
@@ -312,41 +402,46 @@ if df_processed is not None and spot_price is not None:
     with tab_vex_dex:
         st.header(f"Analisi Vanna & Delta (VEX/DEX) per {selected_expiry_label}")
 
-        st.info(
-            "**DEX (Delta Exposure):** Sensitività netta del portafoglio opzioni al prezzo del sottostante. "
-            "Un DEX positivo implica che i dealers sono net-long delta e devono vendere per hedgiarsi. "
-            "Un DEX negativo implica acquisti necessari. "
-            "**VEX (Vanna Exposure):** Sensitività del Delta a una variazione dell'1% della Volatilità Implicita (dDelta/dSigma). "
-            "Il **Vanna Switch Point** indica lo strike dove il regime di hedging legato alla vol cambia segno."
-        )
+        with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
+            st.markdown(
+                """
+**Cosa mostra.** Due esposizioni **aggregate dell'open interest** (non dei dealer):
+- **DEX (Delta Exposure):** il posizionamento direzionale netto dell'OI. **DEX > 0** = l'open interest è net-long delta (prevale il delta delle call, tono più rialzista); **DEX < 0** = net-short delta (prevale il delta delle put).
+- **VEX (Vanna Exposure):** come cambierebbe il delta aggregato dell'OI se la volatilità implicita salisse dell'1%. Il **Vanna Flip** è il livello di prezzo (zero-vanna, ricalcolato al variare dello spot) dove questa esposizione netta cambia segno.
+
+**Cosa guardare nei grafici.** Barre per strike; linea **blu** = spot; linea **gialla tratteggiata** (VEX) = Vanna Flip. Osserva dove si concentrano le barre più lunghe rispetto allo spot.
+
+**⚠️ Attenzione — importante.** A differenza della GEX, **DEX e VEX qui NON applicano una convenzione di segno "dealer"**: sono somme dell'esposizione dell'open interest. Non vanno quindi letti come "i dealer devono comprare/vendere", ma come **posizionamento aggregato dell'OI**. I segni non sono direttamente confrontabili con quelli della tab GEX.
+                """
+            )
 
         # --- KPI Row ---
         col1, col2, col3, col4 = st.columns(4)
         col1.metric(
             label="Total Net DEX",
             value=f"${dex_metrics['total_net_dex'] / 1_000_000_000:.3f} B",
-            help="Somma algebrica della Delta Exposure nozionale per tutti gli strike della scadenza."
+            help="Delta aggregato dell'OI (call +, put −) × 100 × Spot. >0 = OI net-long delta."
         )
         col2.metric(
             label="Total Net VEX",
             value=f"${vex_metrics['total_net_vex'] / 1_000_000:.2f} M",
-            help="Sensitività aggregata a una variazione +1% della IV."
+            help="Esposizione vanna aggregata dell'OI a una variazione +1% della IV."
         )
         col3.metric(
-            label="Vanna Switch Point",
+            label="Vanna Flip",
             value=(
                 f"{vex_metrics['vanna_switch_point']:.2f}"
                 if vex_metrics['vanna_switch_point'] is not None else "N/A"
             ),
-            help="Strike interpolato dove il VEX netto cambia segno (zero crossing)."
+            help="Zero-vanna: livello dove l'esposizione vanna netta (ricalcolata al variare dello spot) cambia segno."
         )
         col4.metric(
-            label="Spot vs Vanna Switch",
+            label="Spot − Vanna Flip",
             value=(
                 f"{spot_price - vex_metrics['vanna_switch_point']:+.2f}"
                 if vex_metrics['vanna_switch_point'] is not None else "N/A"
             ),
-            help="Differenza tra Spot e Vanna Switch Point. Positivo = spot sopra il nodo di switch."
+            help="Differenza tra Spot e Vanna Flip. Positivo = spot sopra il livello di flip."
         )
 
         st.divider()
@@ -357,8 +452,8 @@ if df_processed is not None and spot_price is not None:
         with col_dex:
             st.markdown("#### Profilo DEX (Delta Exposure per Strike)")
             st.caption(
-                "Verde = Dealers net-long delta (devono vendere) | "
-                "Rosso = Dealers net-short delta (devono comprare)"
+                "Verde = DEX positivo (OI net-long delta) | "
+                "Rosso = DEX negativo (OI net-short delta)"
             )
             fig_dex = create_dex_profile_chart(
                 dex_metrics['df_dex_profile'], spot_price, selected_expiry_label
@@ -368,8 +463,8 @@ if df_processed is not None and spot_price is not None:
         with col_vex:
             st.markdown("#### Profilo VEX (Vanna Exposure per Strike)")
             st.caption(
-                "Viola = VEX positivo (vol↓ → dealers comprano) | "
-                "Arancione = VEX negativo (vol↓ → dealers vendono)"
+                "Viola = VEX positivo | Arancione = VEX negativo "
+                "(esposizione vanna aggregata dell'OI, non dei dealer)"
             )
             fig_vex = create_vex_profile_chart(
                 vex_metrics['df_vex_profile'], spot_price,
@@ -380,12 +475,12 @@ if df_processed is not None and spot_price is not None:
         st.divider()
         st.markdown("##### Nota Metodologica")
         st.markdown(
-            "Il **Vanna** è calcolato analiticamente tramite il modello Black-Scholes "
-            "(libreria `py_vollib`) usando i parametri: IV da CBOE (colonna IV), "
-            "Strike dal CSV, DTE in anni, risk-free rate fisso al 4.5%. "
+            "Il **Vanna** è calcolato analiticamente con la formula chiusa di Black-Scholes "
+            "(via `scipy.stats.norm`) usando: IV da CBOE (colonna IV), Strike dal CSV, DTE in anni, "
+            "risk-free rate 4.5% e dividend yield SPX 1.3% (drift r−q). "
             "Strike con IV ≤ 0.1% o DTE=0 sono esclusi dal calcolo (Vanna = 0). "
-            "Il moltiplicatore **0.01** nel VEX nozionale normalizza la sensitività "
-            "a una variazione unitaria dell'1% di volatilità implicita."
+            "Il moltiplicatore **0.01** normalizza la sensitività a una variazione dell'1% di IV. "
+            "**Nota:** DEX e VEX sono esposizioni aggregate dell'open interest, non dei dealer."
         )
 
     # =================================================================
@@ -393,6 +488,22 @@ if df_processed is not None and spot_price is not None:
     # =================================================================
     with tab_oi_vol:
         st.header(f"Supporti e Resistenze (OI & Volumi) per {selected_expiry_label}")
+
+        with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
+            st.markdown(
+                """
+**Cosa mostra.** Dove si concentrano i contratti aperti (**Open Interest**, il posizionamento *accumulato*) e i volumi (**l'attività di oggi**), più una sintesi della direzione dei volumi.
+
+**Come si legge.**
+- **Put Wall** — lo strike con più OI put *vicino al prezzo* (entro ±10%): possibile zona di **supporto**.
+- **Call Wall** — lo strike con più OI call vicino al prezzo: possibile zona di **resistenza**.
+- **Grafici OI e Volumi** — call verso destra (positivo), put verso sinistra (negativo): le barre più lunghe sono i "muri".
+- **Sintesi Drift** — il baricentro dei volumi di oggi (call **e** put) rispetto allo spot: freccia a destra = tono rialzista, a sinistra = ribassista.
+- **Rapporto Vol/OI** — dove il volume di oggi ha superato l'OI esistente (>1.0): attività insolita, posizionamento *nuovo*.
+
+**⚠️ Attenzione.** I Wall sono concentrazioni di OI, non muri garantiti: il prezzo può attraversarli. La ricerca è limitata a ±10% dallo spot proprio per non scambiare le coperture strutturali profondamente OTM per "supporti" operativi.
+                """
+            )
 
         st.subheader("Metriche Open Interest (Posizionamento)")
         col1, col2 = st.columns(2)
@@ -417,9 +528,9 @@ if df_processed is not None and spot_price is not None:
         st.divider()
         st.subheader("Analisi Drift (Sintesi e Dettaglio)")
         st.info(
-            "La 'Sintesi Drift Volumi' calcola il VWAS (Volume Weighted Average Strike) "
-            "e lo confronta con lo Spot. Una freccia a destra indica bias rialzista; "
-            "una freccia a sinistra indica bias ribassista."
+            "La 'Sintesi Drift Volumi' calcola il VWAS (Volume-Weighted Average Strike) su "
+            "TUTTO il volume di giornata (call + put) e lo confronta con lo Spot. Freccia a destra "
+            "= baricentro dei volumi sopra lo spot (bias rialzista); a sinistra = sotto (bias ribassista)."
         )
         fig_drift_arrow = create_drift_arrow_chart(
             activity_metrics['drift_score'], spot_price, selected_expiry_label
@@ -442,6 +553,22 @@ if df_processed is not None and spot_price is not None:
     with tab_stats:
         st.header(f"Modelli Statistici per {selected_expiry_label}")
 
+        with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
+            st.markdown(
+                """
+**Cosa mostra.** Metriche di sentiment e statistiche di scadenza.
+
+**Come si legge.**
+- **Max Pain** — lo strike che, a scadenza, farebbe scadere senza valore il maggior numero di opzioni: teorico "punto di gravitazione".
+- **P/C Ratio (OI e Volume)** — rapporto put/call. **> 1** = prevalenza di put (tono difensivo/ribassista); **< 1** = prevalenza di call (tono rialzista).
+- **Expected Move** — l'ampiezza di movimento attesa (≈1 deviazione standard, ~68% di probabilità) da qui alla scadenza, stimata dalla IV At-The-Money. Le due bande sono l'intervallo probabile.
+
+**Cosa guardare nel grafico.** Max Pain: il payout totale per strike; il **minimo** della curva è lo strike di Max Pain.
+
+**⚠️ Attenzione.** Max Pain è un riferimento teorico, non una previsione. L'Expected Move assume distribuzione lognormale e volatilità costante fino a scadenza: è una stima, non un limite garantito. Per lo 0DTE viene usato un minimo di 1 giorno, quindi a fine giornata può risultare sovrastimato.
+                """
+            )
+
         st.subheader("Metriche Chiave di Posizionamento e Sentiment")
         col1, col2, col3 = st.columns(3)
         col1.metric(
@@ -451,18 +578,18 @@ if df_processed is not None and spot_price is not None:
         )
         col2.metric(
             label="P/C Ratio (Open Interest)",
-            value=f"{pc_ratios['pc_oi_ratio']:.3f}",
+            value=f"{pc_ratios['pc_oi_ratio']:.3f}" if pd.notna(pc_ratios['pc_oi_ratio']) else "N/A",
             help="Sentiment di posizionamento (Put OI / Call OI). > 1 = Bearish"
         )
         col3.metric(
             label="P/C Ratio (Volume)",
-            value=f"{pc_ratios['pc_vol_ratio']:.3f}",
+            value=f"{pc_ratios['pc_vol_ratio']:.3f}" if pd.notna(pc_ratios['pc_vol_ratio']) else "N/A",
             help="Sentiment di attività (Put Vol / Call Vol). > 1 = Bearish"
         )
 
         st.subheader("Movimento Atteso (Expected Move)")
         em = expected_move
-        if em['move']:
+        if em['move'] is not None:
             col1, col2, col3 = st.columns(3)
             col1.metric(label="Banda Superiore Attesa", value=f"{em['upper_band']:.2f}")
             col2.metric(label="Banda Inferiore Attesa", value=f"{em['lower_band']:.2f}")
@@ -484,6 +611,22 @@ if df_processed is not None and spot_price is not None:
     # =================================================================
     with tab_vol_surf:
         st.header("Superficie di Volatilità (Tutte le Scadenze)")
+
+        with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
+            st.markdown(
+                """
+**Cosa mostra.** La **Volatilità Implicita (IV)** in 3D: asse X = giorni alla scadenza (DTE), asse Y = strike, altezza/colore = IV. Usa solo opzioni OTM (put sotto lo spot, call sopra).
+
+**Come si legge.**
+- **Lungo gli strike (a scadenza fissa)** vedi lo **skew**: tipicamente le put OTM hanno IV più alta (la protezione al ribasso costa di più).
+- **Lungo l'asse DTE** vedi la **term structure**: come la IV cambia tra scadenze brevi e lunghe.
+
+**Cosa guardare.** Quanto è ripido lo skew (sale molto verso gli strike bassi = forte domanda di protezione) e se le scadenze brevi hanno IV più alta di quelle lunghe (stress) o più bassa (calma).
+
+**⚠️ Attenzione.** È una superficie **interpolata** dai punti disponibili; le zone senza dati vengono riempite per continuità e sono meno affidabili ai bordi.
+                """
+            )
+
         with st.spinner("Calcolo e interpolazione superficie 3D in corso..."):
             fig_vol_surf = create_volatility_surface_3d(df_processed)
             st.plotly_chart(fig_vol_surf, width="stretch", key="vol_surface_chart")
