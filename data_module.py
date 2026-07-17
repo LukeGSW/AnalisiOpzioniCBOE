@@ -29,6 +29,7 @@ def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_s
     Il Vanna e' identico per Call e Put: la vettorizzazione e' completa.
     """
     RISK_FREE_RATE = 0.045
+    DIVIDEND_YIELD = 0.013   # SPX ~1.3% annuo: il drift corretto in d1/d2 e' (r - q)
     MIN_DTE = 1.0 / 365.25
     MIN_IV = 0.001
 
@@ -45,7 +46,7 @@ def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_s
         T_v = T[valid]
         sigma_v = sigma[valid]
 
-        d1 = (np.log(S / K_v) + (RISK_FREE_RATE + 0.5 * sigma_v ** 2) * T_v) / (sigma_v * np.sqrt(T_v))
+        d1 = (np.log(S / K_v) + (RISK_FREE_RATE - DIVIDEND_YIELD + 0.5 * sigma_v ** 2) * T_v) / (sigma_v * np.sqrt(T_v))
         d2 = d1 - sigma_v * np.sqrt(T_v)
         raw_vanna = -_scipy_norm.pdf(d1) * d2 / sigma_v
         vanna[valid] = np.where(np.isfinite(raw_vanna), raw_vanna, 0.0)
@@ -102,20 +103,43 @@ def parse_cboe_csv(uploaded_file):
         try:
             date_match = re.search(r'Date:\s*(.*?)(?:,Bid|,Ask|GMT)', header_block)
             if date_match:
-                data_timestamp_extracted = date_match.group(1).strip()
+                # Rimuove eventuali virgolette residue (es. '...EDT"') e spazi
+                data_timestamp_extracted = date_match.group(1).strip().strip('"').strip()
+            else:
+                st.warning(
+                    "Attenzione: timestamp non trovato nell'header del file. "
+                    "Uso la data odierna per il calcolo del DTE."
+                )
 
             if data_timestamp_extracted != "Data non disponibile":
-                date_text = data_timestamp_extracted.split(' alle')[0]
                 italian_to_english_months = {
                     'gennaio': 'January', 'febbraio': 'February', 'marzo': 'March',
                     'aprile': 'April', 'maggio': 'May', 'giugno': 'June', 'luglio': 'July',
                     'agosto': 'August', 'settembre': 'September', 'ottobre': 'October',
                     'novembre': 'November', 'dicembre': 'December'
                 }
-                date_text_en = date_text.lower()
+                # Normalizza: minuscolo + traduzione mesi IT -> EN
+                date_low = data_timestamp_extracted.lower()
                 for it, en in italian_to_english_months.items():
-                    date_text_en = date_text_en.replace(it, en)
-                analysis_date = pd.to_datetime(date_text_en, format='%d %B %Y')
+                    date_low = date_low.replace(it, en.lower())
+                # Toglie la parte oraria: gestisce sia ' at ' (EN CBOE) sia ' alle ' (IT)
+                date_low = re.split(r'\s+(?:at|alle)\s+', date_low)[0].strip().rstrip(',').strip()
+
+                # Estrazione tollerante a entrambi gli ordini:
+                #   "july 17, 2026"  (CBOE inglese, mese-giorno)   /   "17 july 2026"  (italiano, giorno-mese)
+                m = re.search(r'([a-z]+)\s+(\d{1,2}),?\s+(\d{4})', date_low)      # mese giorno anno
+                if m:
+                    analysis_date = pd.to_datetime(
+                        f"{m.group(1)} {m.group(2)} {m.group(3)}", format='%B %d %Y'
+                    ).normalize()
+                else:
+                    m = re.search(r'(\d{1,2})\s+([a-z]+)\s+(\d{4})', date_low)    # giorno mese anno
+                    if m:
+                        analysis_date = pd.to_datetime(
+                            f"{m.group(2)} {m.group(1)} {m.group(3)}", format='%B %d %Y'
+                        ).normalize()
+                    else:
+                        raise ValueError(f"Formato data non riconosciuto: '{data_timestamp_extracted}'")
 
         except Exception as e:
             st.warning(
@@ -147,7 +171,20 @@ def parse_cboe_csv(uploaded_file):
             if 'Strike' in df_options_raw.columns:
                 median_strike = pd.to_numeric(df_options_raw['Strike'], errors='coerce').median()
                 spot_price_extracted = median_strike
-                st.warning(f"Spot Price non trovato nell'header. Stimato dai dati: {spot_price_extracted}")
+                st.warning(
+                    f"Spot Price non trovato nell'header: stimato dalla mediana degli strike "
+                    f"({spot_price_extracted}). NB: e' il centro della catena, non il prezzo reale; "
+                    f"tutte le metriche in dollari sono APPROSSIMATE."
+                )
+
+        # Spot non utilizzabile (None/NaN/<=0) -> stop esplicito, evita una dashboard piena di 'nan'.
+        if (spot_price_extracted is None or not np.isfinite(spot_price_extracted)
+                or spot_price_extracted <= 0):
+            st.error(
+                "Errore: impossibile determinare uno Spot Price valido dal file. "
+                "Verifica l'header del CSV CBOE (righe 'Last:'/'Bid:'/'Ask:')."
+            )
+            return None, None, None
 
         # --- 5. Separazione Calls/Puts ---
         step = "Separazione Call/Put"
@@ -176,31 +213,87 @@ def parse_cboe_csv(uploaded_file):
         df_calls['Type'] = 'Call'
 
         df_puts = df_options_raw[["Strike", "Expiration Date"] + put_cols].copy()
-        clean_put_cols = [c.replace('.1', '').strip() for c in df_puts.columns]
+        clean_put_cols = [re.sub(r'\.\d+$', '', c).strip() for c in df_puts.columns]
         df_puts.columns = [put_rename_map.get(c, c) for c in clean_put_cols]
         df_puts['Type'] = 'Put'
 
         df_options_clean = pd.concat([df_calls, df_puts], ignore_index=True)
 
+        # Verifica che le colonne canoniche essenziali esistano (header CBOE variato -> errore chiaro).
+        required_cols = ['Strike', 'OI', 'Delta', 'Gamma']
+        missing_cols = [c for c in required_cols if c not in df_options_clean.columns]
+        if missing_cols:
+            st.error(
+                f"Errore: colonne attese mancanti dopo il parsing ({missing_cols}). "
+                f"Verifica che il file sia un export standard della catena opzioni CBOE."
+            )
+            return None, None, None
+
         # --- 6. Conversione Numerica ---
         step = "Conversione Numerica"
-        numeric_cols = ['Strike', 'Last', 'Bid', 'Ask', 'Vol', 'OI', 'IV', 'Delta', 'Gamma']
-        for col in numeric_cols:
+        # Colonne dove uno 0 e' semanticamente valido (nessun prezzo/size/OI): riempi a 0.
+        fill_zero_cols = ['Last', 'Bid', 'Ask', 'Vol', 'OI']
+        for col in fill_zero_cols:
             if col in df_options_clean.columns:
                 df_options_clean[col] = pd.to_numeric(df_options_clean[col], errors='coerce').fillna(0)
 
+        # Strike e Greche/IV: NON riempire con 0 (uno 0 fittizio falserebbe le metriche). Tieni NaN.
+        keep_nan_cols = ['Strike', 'IV', 'Delta', 'Gamma']
+        for col in keep_nan_cols:
+            if col in df_options_clean.columns:
+                df_options_clean[col] = pd.to_numeric(df_options_clean[col], errors='coerce')
+
+        # Uno Strike non numerico non e' utilizzabile: rimuovi la riga (niente strike-fantasma a 0).
+        before_strike = len(df_options_clean)
+        df_options_clean = df_options_clean[
+            df_options_clean['Strike'].notna() & (df_options_clean['Strike'] > 0)
+        ].copy()
+        dropped_strike = before_strike - len(df_options_clean)
+        if dropped_strike > 0:
+            st.warning(f"Attenzione: {dropped_strike} righe con Strike non valido sono state rimosse.")
+
         df_processed = df_options_clean.copy()
 
-        df_processed['Expiration Date'] = pd.to_datetime(
-            df_processed['Expiration Date'], format='%a %b %d %Y', errors='coerce'
-        )
+        # --- Parsing scadenze robusto: prova il formato CBOE, poi fallback tollerante (dateutil) ---
+        step = "Parsing Scadenze"
+        exp_parsed = pd.to_datetime(df_processed['Expiration Date'], format='%a %b %d %Y', errors='coerce')
+        if exp_parsed.isna().mean() > 0.5:
+            # Il formato non e' quello atteso: tenta un'inferenza generica (ISO, US, abbreviato...).
+            exp_parsed = pd.to_datetime(df_processed['Expiration Date'], errors='coerce')
+        df_processed['Expiration Date'] = exp_parsed
+
+        if df_processed['Expiration Date'].isna().all():
+            st.error(
+                "Errore: impossibile interpretare le date di scadenza ('Expiration Date'). "
+                "Il formato del file potrebbe essere cambiato."
+            )
+            return None, None, None
+        n_bad_exp = int(df_processed['Expiration Date'].isna().sum())
+        if n_bad_exp > 0:
+            st.warning(f"Attenzione: {n_bad_exp} righe con data di scadenza non valida sono state rimosse.")
+            df_processed = df_processed[df_processed['Expiration Date'].notna()].copy()
+
         df_processed['DTE_Days'] = (df_processed['Expiration Date'] - analysis_date).dt.days
         df_processed['DTE_Years'] = df_processed['DTE_Days'] / 365.25
 
-        if spot_price_extracted and spot_price_extracted > 0:
+        # Greche mancanti su strike con OI: segnala (trasparenza) e azzera SOLO per l'esposizione.
+        greek_missing = df_processed[
+            (df_processed['OI'] > 0) &
+            (df_processed['Delta'].isna() | df_processed['Gamma'].isna())
+        ]
+        if not greek_missing.empty:
+            st.warning(
+                f"Attenzione: {len(greek_missing)} strike con OI>0 hanno Greche mancanti "
+                f"(OI totale {greek_missing['OI'].sum():,.0f}); contano 0 nelle esposizioni GEX/DEX."
+            )
+        df_processed['Delta'] = df_processed['Delta'].fillna(0)
+        df_processed['Gamma'] = df_processed['Gamma'].fillna(0)
+        # NB: 'IV' resta NaN se mancante -> gestita a valle (Expected Move, vol surface, vanna).
+
+        if spot_price_extracted and spot_price_extracted > 0 and np.isfinite(spot_price_extracted):
             df_processed['Moneyness'] = df_processed['Strike'] / spot_price_extracted
         else:
-            df_processed['Moneyness'] = 0
+            df_processed['Moneyness'] = np.nan
 
         # --- 7. Calcolo GEX ---
         step = "Calcolo GEX"
@@ -272,7 +365,11 @@ def parse_cboe_csv(uploaded_file):
         return df_processed, spot_price_extracted, data_timestamp_extracted
 
     except Exception as e:
-        st.error(f"Errore critico durante il parsing ({step}): {str(e)}")
+        st.error(
+            f"Impossibile elaborare il file (fase: {step}). "
+            f"Verifica che sia un CSV non modificato della catena opzioni CBOE."
+        )
+        # Traccia completa solo lato server (log), non nell'interfaccia pubblica.
         import traceback
-        st.code(traceback.format_exc())
+        print("[data_module] ERRORE parsing:\n" + traceback.format_exc())
         return None, None, None
