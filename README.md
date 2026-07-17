@@ -6,6 +6,8 @@ Una dashboard Streamlit ad alte prestazioni per l'analisi quantitativa posiziona
 
 Questo strumento traduce un singolo file CSV in un'analisi interattiva completa, focalizzandosi su Gamma Exposure (GEX), livelli di Open Interest/Volume, Max Pain e modelli di volatilità, come definito nel progetto Kriterion Quant.
 
+> ⚠️ **Disclaimer — Non è consulenza finanziaria.** Strumento a solo scopo informativo/educativo. Le metriche su posizionamento dei dealer (GEX/DEX/VEX, Switch Point, Walls) si basano su **ipotesi di modello** e non rappresentano posizioni realmente osservate sul mercato. I dati estratti dal CSV (spot, timestamp, scadenze) possono essere non aggiornati o errati: verificali sempre in autonomia. Nessuna garanzia sui risultati. Vedi il file [LICENSE](LICENSE) per i dettagli.
+
 ## 📸 Anteprima Dashboard
 
 (Qui puoi inserire un'immagine aggiornata del tuo dashboard)
@@ -99,5 +101,12 @@ SPX_Options_Analyzer/
 ├── 📄 calculations_module.py   # Modulo per tutti i calcoli (GEX, OI, Max Pain)
 ├── 📄 visualization_module.py  # Modulo per creare i grafici Plotly
 ├── 📄 requirements.txt         # Dipendenze Python
+├── 📄 LICENSE                  # Licenza MIT + disclaimer
 └── 📄 README.md                # Questo file
 ```
+
+-----
+
+## 📜 Licenza
+
+Distribuito con licenza **MIT** (vedi [LICENSE](LICENSE)). Include un disclaimer esplicito: strumento a scopo informativo/educativo, **non è consulenza finanziaria**, nessuna garanzia sui risultati.
