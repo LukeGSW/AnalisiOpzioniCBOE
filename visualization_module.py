@@ -23,8 +23,10 @@ KRITERION_THEME = {
     # Colori esclusivi per VEX/DEX — non confondibili con il GEX
     'color_vex_pos': '#8b5cf6',  # Viola (VEX positivo)
     'color_vex_neg': '#f97316',  # Arancione (VEX negativo)
-    'color_dex_pos': '#10b981',  # Verde (DEX positivo = dealer short delta → mercato in pressione)
-    'color_dex_neg': '#ef4444',  # Rosso  (DEX negativo = dealer long delta → mercato in acquisto)
+    'color_dex_pos': '#10b981',  # Verde (DEX positivo) — coerente con le caption utente
+    'color_dex_neg': '#ef4444',  # Rosso  (DEX negativo) — coerente con le caption utente
+    # NB: l'attribuzione "dealer long/short" della DEX e' un'IPOTESI di modello (delta grezzo
+    # per OI, nessuna convenzione di segno dealer applicata), non una posizione osservata.
 }
 
 
@@ -78,17 +80,18 @@ def create_gex_profile_chart(df_gex_profile, spot_price, gamma_switch_point, exp
         line_color=KRITERION_THEME['color_neutral'],
         annotation_text=f"Spot: {spot_price:.2f}", annotation_position="bottom right"
     )
-    if gamma_switch_point:
+    if gamma_switch_point is not None:
         fig.add_hline(
             y=gamma_switch_point, line_width=2, line_dash="dash",
             line_color=KRITERION_THEME['color_accent'],
-            annotation_text=f"Switch: {gamma_switch_point:.2f}", annotation_position="bottom left"
+            annotation_text=f"Gamma Flip: {gamma_switch_point:.2f}", annotation_position="bottom left"
         )
 
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Profilo GEX (Scadenza: {expiry_label})",
-        xaxis_title="Net GEX (Notional $)", yaxis_title="Strike Price",
+        xaxis_title="Net GEX (Notional $) — vista ±20% spot; il Net totale include tutti gli strike",
+        yaxis_title="Strike Price",
         height=1200, yaxis=dict(autorange="reversed")
     )
     return fig
@@ -190,18 +193,21 @@ def create_volatility_surface_3d(df_all_processed):
         df_surf_puts  = df_all_processed[(df_all_processed['Type'] == 'Put')  & (df_all_processed['Moneyness'] < 1.0)].copy()
         df_surf_calls = df_all_processed[(df_all_processed['Type'] == 'Call') & (df_all_processed['Moneyness'] > 1.0)].copy()
         df_surf = pd.concat([df_surf_puts, df_surf_calls])
-        df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 1.50)]
+        # Cap IV a 3.0 (non 1.5): le put OTM a brevissima scadenza superano spesso il 150%
+        # e vanno mostrate, altrimenti lo skew viene tagliato proprio dove e' informativo.
+        df_surf = df_surf[(df_surf['IV'] > 0.01) & (df_surf['IV'] < 3.00)]
+        df_surf = df_surf.dropna(subset=['IV', 'DTE_Days', 'Strike'])
         if len(df_surf) < 20:
             raise Exception("Dati OTM insufficienti.")
 
         x_grid = np.linspace(df_surf['DTE_Days'].min(), df_surf['DTE_Days'].max(), 50)
         y_grid = np.linspace(df_surf['Strike'].min(), df_surf['Strike'].max(), 50)
         X_grid, Y_grid = np.meshgrid(x_grid, y_grid)
-        Z_grid = griddata(
-            points=(df_surf['DTE_Days'], df_surf['Strike']),
-            values=df_surf['IV'],
-            xi=(X_grid, Y_grid), method='linear'
-        )
+        pts    = (df_surf['DTE_Days'], df_surf['Strike'])
+        Z_lin  = griddata(pts, df_surf['IV'], (X_grid, Y_grid), method='linear')
+        # Riempi i buchi (NaN fuori dall'inviluppo convesso) con 'nearest': niente fori fuorvianti.
+        Z_near = griddata(pts, df_surf['IV'], (X_grid, Y_grid), method='nearest')
+        Z_grid = np.where(np.isnan(Z_lin), Z_near, Z_lin)
 
         fig = go.Figure()
         fig.add_trace(go.Surface(
@@ -227,7 +233,12 @@ def create_volatility_surface_3d(df_all_processed):
         print(f"[ERRORE in create_volatility_surface_3d]: {e}")
         fig = go.Figure()
         fig = apply_kriterion_theme(fig)
-        fig.update_layout(title=f"Errore nella creazione della superficie 3D: {e}", height=900)
+        fig.add_annotation(
+            text="Dati OTM insufficienti per costruire la superficie di volatilità.",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color=KRITERION_THEME['font_color'])
+        )
+        fig.update_layout(title="Superficie di Volatilità Implicita (IV)", height=900)
         return fig
 
 
@@ -326,11 +337,9 @@ def create_dex_profile_chart(df_dex_profile, spot_price, expiry_label):
     Stile: Bar chart orizzontale (strike su asse Y), identico al GEX.
     Colori: Verde (DEX netto positivo), Rosso (DEX netto negativo).
 
-    Interpretazione:
-    - DEX > 0: I dealers hanno delta positivo netto → devono vendere
-      il sottostante per hedgiarsi (possibile pressione ribassista).
-    - DEX < 0: I dealers hanno delta negativo netto → devono acquistare
-      il sottostante per hedgiarsi (possibile supporto ai prezzi).
+    Interpretazione (esposizione aggregata dell'open interest, NON dei dealer):
+    - DEX > 0: a quello strike l'OI e' net-long delta (prevale il delta delle call).
+    - DEX < 0: a quello strike l'OI e' net-short delta (prevale il delta delle put).
 
     Args:
         df_dex_profile : DataFrame con colonne ['Strike', 'Net_DEX']
@@ -374,7 +383,7 @@ def create_dex_profile_chart(df_dex_profile, spot_price, expiry_label):
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Profilo Delta Exposure — DEX (Scadenza: {expiry_label})",
-        xaxis_title="Net DEX Nozionale ($) — [Delta × OI × 100 × Spot]",
+        xaxis_title="Net DEX Nozionale ($) — [Delta × OI × 100 × Spot] — vista ±20% spot",
         yaxis_title="Strike Price",
         height=1200,
         yaxis=dict(autorange="reversed")
@@ -394,14 +403,12 @@ def create_vex_profile_chart(df_vex_profile, spot_price, vex_switch_point, expir
     Questi colori sono deliberatamente diversi dal GEX (verde/rosso) per
     distinguere visivamente le due analisi.
 
-    Interpretazione:
-    - VEX > 0 a un certo strike: una RIDUZIONE della volatilità
-      costringe i dealers ad ACQUISTARE il sottostante (effetto stabilizzante).
-    - VEX < 0 a un certo strike: una RIDUZIONE della volatilità
-      costringe i dealers a VENDERE il sottostante (effetto destabilizzante).
-    - Il "Vanna Switch Point" è lo strike dove l'esposizione cambia segno:
-      è un livello chiave perché al di sotto/sopra cambia il regime
-      di hedging dei dealers rispetto alla volatilità.
+    Interpretazione (esposizione vanna aggregata dell'open interest, NON dei dealer):
+    - VEX > 0 a un certo strike: il delta aggregato dell'OI aumenta se la vol sale
+      (diminuisce se la vol scende) in quel nodo.
+    - VEX < 0 a un certo strike: il delta aggregato dell'OI diminuisce se la vol sale.
+    - Il "Vanna Flip" è il livello di prezzo (zero-vanna, ricalcolato al
+      variare dello spot) dove l'esposizione vanna netta cambia segno.
 
     Args:
         df_vex_profile    : DataFrame con colonne ['Strike', 'Net_VEX']
@@ -443,19 +450,19 @@ def create_vex_profile_chart(df_vex_profile, spot_price, vex_switch_point, expir
         annotation_position="bottom right"
     )
 
-    # Vanna Switch Point (zero crossing — linea gialla tratteggiata, stile GEX Switch)
+    # Vanna Flip (zero-vanna ricalcolato al variare dello spot — linea gialla tratteggiata, stile Gamma Flip)
     if vex_switch_point is not None:
         fig.add_hline(
             y=vex_switch_point, line_width=2, line_dash="dash",
             line_color=KRITERION_THEME['color_accent'],
-            annotation_text=f"Vanna Switch: {vex_switch_point:.2f}",
+            annotation_text=f"Vanna Flip: {vex_switch_point:.2f}",
             annotation_position="bottom left"
         )
 
     fig = apply_kriterion_theme(fig)
     fig.update_layout(
         title=f"Profilo Vanna Exposure — VEX (Scadenza: {expiry_label})",
-        xaxis_title="Net VEX Nozionale ($) — [Vanna × OI × 100 × Spot × 1%]",
+        xaxis_title="Net VEX Nozionale ($) — [Vanna × OI × 100 × Spot × 1%] — vista ±20% spot",
         yaxis_title="Strike Price",
         height=1200,
         yaxis=dict(autorange="reversed")
