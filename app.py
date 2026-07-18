@@ -84,7 +84,9 @@ st.set_page_config(
     page_title="Kriterion Quant - Options Chain Analyzer",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    # Sidebar aperta all'avvio: contiene i Parametri di modello (risk-free, dividend yield)
+    # e il download del JSON. Se restasse chiusa, molti utenti non troverebbero la linguetta.
+    initial_sidebar_state="expanded"
 )
 st.markdown("""
 <style>
