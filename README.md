@@ -12,10 +12,7 @@ Questo strumento traduce un singolo file CSV in un'analisi interattiva completa,
 
 > ⚠️ **Disclaimer — Non è consulenza finanziaria.** Strumento a solo scopo informativo/educativo. Le metriche su posizionamento dei dealer (GEX/DEX/VEX, Switch Point, Walls) si basano su **ipotesi di modello** e non rappresentano posizioni realmente osservate sul mercato. I dati estratti dal CSV (spot, timestamp, scadenze) possono essere non aggiornati o errati: verificali sempre in autonomia. Nessuna garanzia sui risultati. Vedi il file [LICENSE](LICENSE) per i dettagli.
 
-## 📸 Anteprima Dashboard
 
-(Qui puoi inserire un'immagine aggiornata del tuo dashboard)
-`![Anteprima Dashboard](dashboard_preview.png)`
 
 -----
 
