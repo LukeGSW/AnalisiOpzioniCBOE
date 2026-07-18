@@ -1,10 +1,14 @@
 
 
-# Kriterion Quant - Analizzatore Chain Opzioni SPX
+# Kriterion Quant - Analizzatore Chain Opzioni
 
-Una dashboard Streamlit ad alte prestazioni per l'analisi quantitativa posizionale della chain di opzioni SPX, basata su file CSV scaricati dalla CBOE.
+Una dashboard Streamlit ad alte prestazioni per l'analisi quantitativa posizionale di una chain di opzioni, basata su file CSV scaricati dalla CBOE.
+
+Funziona con **qualsiasi sottostante** disponibile sulla CBOE (indici come SPX, ETF come SPY, singole azioni): il ticker viene rilevato automaticamente dall'header del CSV e usato in tutta l'app e nel nome del file JSON esportato.
 
 Questo strumento traduce un singolo file CSV in un'analisi interattiva completa, focalizzandosi su Gamma Exposure (GEX), livelli di Open Interest/Volume, Max Pain e modelli di volatilità, come definito nel progetto Kriterion Quant.
+
+> **Parametri di modello (sidebar):** *risk-free rate* e *dividend yield* sono impostabili dalla sidebar dell'app. I default (4,5% e 1,3%) sono calibrati su un indice azionario USA tipo SPX: **vanno adattati allo strumento analizzato** (dividend yield reale, `0` se non paga dividendi, e tasso risk-free corretto per valuta e scadenza). Incidono **solo** su Vanna/VEX e sui livelli di Gamma/Vanna Flip; GEX, DEX, Open Interest, Max Pain, Expected Move e i Wall non ne risentono. I valori usati vengono salvati nel JSON esportato (`metadata.model_params`).
 
 > ⚠️ **Disclaimer — Non è consulenza finanziaria.** Strumento a solo scopo informativo/educativo. Le metriche su posizionamento dei dealer (GEX/DEX/VEX, Switch Point, Walls) si basano su **ipotesi di modello** e non rappresentano posizioni realmente osservate sul mercato. I dati estratti dal CSV (spot, timestamp, scadenze) possono essere non aggiornati o errati: verificali sempre in autonomia. Nessuna garanzia sui risultati. Vedi il file [LICENSE](LICENSE) per i dettagli.
 
