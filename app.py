@@ -81,7 +81,7 @@ def _sanitize_nan(obj):
 # 1. IMPOSTAZIONE PAGINA E TEMA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Kriterion Quant - SPX Analyzer",
+    page_title="Kriterion Quant - Options Chain Analyzer",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -99,7 +99,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 SPX Options Chain Analyzer")
+# Il titolo viene aggiornato col ticker del sottostante una volta caricato il file.
+_title_slot = st.empty()
+_title_slot.title("📊 Options Chain Analyzer")
 st.markdown("Powered by **Kriterion Quant**")
 st.caption(
     "⚠️ **Solo a scopo informativo/educativo — NON è consulenza finanziaria.** "
@@ -115,7 +117,7 @@ with st.expander("📖 Glossario dei termini (parti da qui se sei alle prime arm
 **Le basi**
 - **Opzione** — contratto che dà il diritto (non l'obbligo) di comprare o vendere il sottostante a un prezzo fissato entro una data.
 - **Call / Put** — opzione che guadagna se il prezzo *sale* (call) o *scende* (put).
-- **Sottostante / Spot** — lo strumento su cui è scritta l'opzione (qui l'indice SPX) e il suo prezzo attuale.
+- **Sottostante / Spot** — lo strumento su cui è scritta l'opzione (indice, ETF o azione) e il suo prezzo attuale.
 - **Strike** — il prezzo prefissato dell'opzione.
 - **Scadenza / DTE** — la data di scadenza; *DTE* = giorni che mancano ad essa (*Days To Expiry*).
 - **ITM / ATM / OTM** — opzione *dentro* i soldi (ha valore), *alla pari* (strike ≈ spot), *fuori* dai soldi (senza valore intrinseco).
@@ -154,23 +156,56 @@ with st.expander("📖 Glossario dei termini (parti da qui se sei alle prime arm
 # -----------------------------------------------------------------------------
 # 2. LOGICA DI CARICAMENTO E CACHING DEI DATI
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# PARAMETRI DI MODELLO (sidebar) — devono esistere PRIMA del caricamento dati,
+# perche' entrano nel calcolo di Vanna/VEX e dei livelli di Flip.
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Parametri di modello")
+    st.caption(
+        "Questi due valori incidono **solo** su Vanna/VEX e sui livelli di Flip "
+        "(GEX, DEX, OI, Max Pain, Expected Move e i Wall non ne risentono).\n\n"
+        "I default sono calibrati su un **indice azionario USA (tipo SPX)**: "
+        "**modificali in base allo strumento che stai analizzando.** Inserisci il "
+        "*dividend yield* effettivo del sottostante — **0 se non paga dividendi** — "
+        "e il *tasso risk-free* corrente coerente con la valuta e con l'orizzonte "
+        "della scadenza analizzata."
+    )
+    risk_free_rate = st.number_input(
+        "Risk-free rate (% annuo)",
+        min_value=-5.0, max_value=25.0, value=4.5, step=0.10, format="%.2f",
+        help="Tasso privo di rischio annualizzato. Default 4.5% (USD)."
+    ) / 100.0
+    dividend_yield = st.number_input(
+        "Dividend yield (% annuo)",
+        min_value=0.0, max_value=25.0, value=1.3, step=0.10, format="%.2f",
+        help="Rendimento da dividendi annuo del sottostante. Default 1.3% (SPX). Metti 0 se non paga dividendi."
+    ) / 100.0
+
+
 @st.cache_data
-def load_data(uploaded_file):
+def load_data(uploaded_file, risk_free_rate, dividend_yield):
     try:
-        df_processed, spot_price, data_timestamp = parse_cboe_csv(uploaded_file)
+        df_processed, spot_price, data_timestamp, underlying = parse_cboe_csv(
+            uploaded_file, risk_free_rate=risk_free_rate, dividend_yield=dividend_yield
+        )
         if df_processed is None:
-            return None, None, None
-        return df_processed, spot_price, data_timestamp
+            return None, None, None, None
+        return df_processed, spot_price, data_timestamp, underlying
     except Exception as e:
         st.error("Errore irreversibile durante il parsing del file. Verifica che sia un CSV CBOE valido.")
         print(f"[app.load_data] {e}")
-        return None, None, None
+        return None, None, None, None
 
 
 uploaded_file = st.file_uploader("Carica il file CSV della CBOE Options Chain", type=["csv"])
-df_processed, spot_price, data_timestamp = (None, None, None)
+df_processed, spot_price, data_timestamp, underlying = (None, None, None, None)
 if uploaded_file is not None:
-    df_processed, spot_price, data_timestamp = load_data(uploaded_file)
+    df_processed, spot_price, data_timestamp, underlying = load_data(
+        uploaded_file, risk_free_rate, dividend_yield
+    )
+    if underlying:
+        _title_slot.title(f"📊 {underlying} Options Chain Analyzer")
 else:
     st.info("In attesa del caricamento del file CSV...")
 
@@ -210,7 +245,8 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
 
     # --- 3.3. Calcola TUTTI i KPI (una sola volta) ---
     with st.spinner("Calcolo metriche per la scadenza..."):
-        gex_metrics      = calculate_gex_metrics(df_selected_expiry, spot_price)
+        gex_metrics      = calculate_gex_metrics(df_selected_expiry, spot_price,
+                                                 risk_free_rate, dividend_yield)
         oi_metrics       = calculate_oi_walls(df_selected_expiry, spot_price)
         vol_metrics      = calculate_volume_profile(df_selected_expiry, spot_price)
         activity_metrics = calculate_activity_ratio(df_selected_expiry, spot_price)
@@ -219,18 +255,25 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         expected_move    = calculate_expected_move(df_selected_expiry, spot_price)
         # --- NUOVI CALCOLI ---
         dex_metrics      = calculate_dex_metrics(df_selected_expiry, spot_price)
-        vex_metrics      = calculate_vex_metrics(df_selected_expiry, spot_price)
+        vex_metrics      = calculate_vex_metrics(df_selected_expiry, spot_price,
+                                                 risk_free_rate, dividend_yield)
 
     # =========================================================================
     # PREPARAZIONE EXPORT JSON
     # =========================================================================
     export_data = {
         "metadata": {
-            "application":         "Kriterion Quant - SPX Analyzer",
+            "application":         "Kriterion Quant - Options Chain Analyzer",
+            "underlying":          underlying,
             "export_date":         dt.datetime.now().isoformat(),
             "analyzed_expiry":     selected_expiry_label,
             "spot_price":          spot_price,
             "data_timestamp_file": str(data_timestamp),
+            "model_params": {
+                "risk_free_rate": risk_free_rate,
+                "dividend_yield": dividend_yield,
+                "note": "Usati solo per Vanna/VEX e per i livelli di Gamma/Vanna Flip."
+            },
             "disclaimer": (
                 "Solo a scopo informativo/educativo, non consulenza finanziaria. "
                 "GEX usa la convenzione dealer long-call/short-put (segno put invertito). "
@@ -307,7 +350,10 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         st.download_button(
             label="Scarica JSON Analisi (LLM Ready)",
             data=json_string,
-            file_name=f"kriterion_spx_analysis_{selected_expiry_label.split()[0]}.json",
+            file_name=(
+                f"kriterion_{str(underlying).lower()}_analysis_"
+                f"{selected_expiry_label.split()[0]}.json"
+            ),
             mime="application/json",
             help="Scarica un file JSON strutturato con tutti i calcoli (GEX, DEX, VEX, OI, Drift, Max Pain) per la scadenza selezionata."
         )
@@ -321,10 +367,10 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**In parole semplici.** Un'opzione è un contratto che dà il diritto di comprare (*call*) o vendere (*put*) l'indice SPX a un prezzo prefissato (lo *strike*) entro una data (la *scadenza*). Chi vende molte opzioni — di solito i *market maker*, qui chiamati "dealer" — per non rischiare deve continuamente comprare e vendere SPX man mano che il prezzo si muove. Questo aggiustamento lascia tracce sul mercato: le metriche qui provano a stimarle. Questa è la schermata di riepilogo.
+**In parole semplici.** Un'opzione è un contratto che dà il diritto di comprare (*call*) o vendere (*put*) il sottostante a un prezzo prefissato (lo *strike*) entro una data (la *scadenza*). Chi vende molte opzioni — di solito i *market maker*, qui chiamati "dealer" — per non rischiare deve continuamente comprare e vendere il sottostante man mano che il prezzo si muove. Questo aggiustamento lascia tracce sul mercato: le metriche qui provano a stimarle. Questa è la schermata di riepilogo.
 
 **Le caselle in alto.**
-- **Spot Price** — il prezzo attuale di SPX, il riferimento per tutto il resto.
+- **Spot Price** — il prezzo attuale del sottostante, il riferimento per tutto il resto.
 - **Net GEX** — il "clima" atteso: **negativo (SHORT γ)** = movimenti più *amplificati*, giornate nervose e direzionali; **positivo (LONG γ)** = movimenti *smorzati*, mercato più tranquillo e laterale.
 - **Net VEX** — quanto il posizionamento reagisce se la volatilità cambia dell'1%.
 - **Put Wall / Call Wall** — gli strike con più contratti aperti *vicino al prezzo*: possibili zone di **supporto** (sotto) e **resistenza** (sopra).
@@ -402,7 +448,7 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**In parole semplici.** Il *gamma* misura quanto rapidamente cambia la copertura che i dealer devono avere quando il prezzo si muove. Immagina che i dealer abbiano venduto molte opzioni: per restare neutrali ricomprano o rivendono SPX in continuazione. La **GEX** somma questa "spinta di copertura" su tutta la catena e ci dice se, nel complesso, i dealer **frenano** o **amplificano** i movimenti.
+**In parole semplici.** Il *gamma* misura quanto rapidamente cambia la copertura che i dealer devono avere quando il prezzo si muove. Immagina che i dealer abbiano venduto molte opzioni: per restare neutrali ricomprano o rivendono il sottostante in continuazione. La **GEX** somma questa "spinta di copertura" su tutta la catena e ci dice se, nel complesso, i dealer **frenano** o **amplificano** i movimenti.
 
 **I due regimi.**
 - **LONG gamma (Net GEX positivo, prezzo SOPRA il Flip):** i dealer comprano quando il mercato scende e vendono quando sale → **frenano** il prezzo. Risultato: oscillazioni contenute, il mercato tende a tornare verso i livelli, i grandi cluster di gamma fanno da **supporto/resistenza** e da **calamita** (il prezzo viene "pinnato" lì, soprattutto verso scadenza).
@@ -451,7 +497,7 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         with st.expander("ℹ️ Come leggere questa sezione", expanded=False):
             st.markdown(
                 """
-**In parole semplici.** Ogni opzione ha un *delta* (quanto guadagna/perde se SPX si muove di 1 punto) e una *vanna* (quanto cambia quel delta se la volatilità sale o scende). Qui li sommiamo su tutti i contratti aperti (*open interest*) per fotografare **come è posizionato il mercato**.
+**In parole semplici.** Ogni opzione ha un *delta* (quanto guadagna/perde se il sottostante si muove di 1 punto) e una *vanna* (quanto cambia quel delta se la volatilità sale o scende). Qui li sommiamo su tutti i contratti aperti (*open interest*) per fotografare **come è posizionato il mercato**.
 
 - **DEX (Delta) — il posizionamento direzionale.** **DEX > 0** = tra i contratti aperti prevale il delta delle call → posizionamento con tono più **rialzista**; **DEX < 0** = prevale il delta delle put → tono più **ribassista/difensivo**.
 - **VEX (Vanna) — la sensibilità alla volatilità.** Ti dice come cambierebbe l'esposizione se la volatilità si muovesse. Il **Vanna Flip** è il prezzo che separa i due regimi.
@@ -529,7 +575,11 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
         st.markdown(
             "Il **Vanna** è calcolato analiticamente con la formula chiusa di Black-Scholes "
             "(via `scipy.stats.norm`) usando: IV da CBOE (colonna IV), Strike dal CSV, DTE in anni, "
-            "risk-free rate 4.5% e dividend yield SPX 1.3% (drift r−q). "
+            f"risk-free rate **{risk_free_rate:.2%}** e dividend yield **{dividend_yield:.2%}** "
+            f"(drift r−q), impostabili nella **sidebar → Parametri di modello**. "
+            f"⚠️ I default sono calibrati su un indice azionario USA (tipo SPX): "
+            f"**adattali allo strumento analizzato** (dividend yield reale, 0 se non paga dividendi, "
+            f"e tasso risk-free corretto per valuta e scadenza). "
             "Strike con IV ≤ 0.1% o DTE=0 sono esclusi dal calcolo (Vanna = 0). "
             "Il moltiplicatore **0.01** normalizza la sensitività a una variazione dell'1% di IV. "
             "**Nota:** DEX e VEX sono esposizioni aggregate dell'open interest, non dei dealer."
@@ -618,7 +668,7 @@ if df_processed is not None and spot_price is not None and np.isfinite(spot_pric
 **Come si legge.**
 - **Max Pain** — lo strike che, a scadenza, farebbe scadere senza valore il maggior numero di opzioni. In teoria è un "punto di gravitazione": chi ha venduto le opzioni ha interesse a che il prezzo finisca lì.
 - **P/C Ratio (OI e Volume)** — rapporto put/call. **> 1** = prevalenza di put (tono difensivo/ribassista); **< 1** = prevalenza di call (tono rialzista).
-- **Expected Move** — quanto il mercato *si aspetta* che SPX si muova (in su o in giù) da qui alla scadenza: è ≈1 deviazione standard, cioè circa **68% di probabilità** di chiudere dentro le due bande. Stimato dalla volatilità implicita At-The-Money.
+- **Expected Move** — quanto il mercato *si aspetta* che il sottostante si muova (in su o in giù) da qui alla scadenza: è ≈1 deviazione standard, cioè circa **68% di probabilità** di chiudere dentro le due bande. Stimato dalla volatilità implicita At-The-Money.
 
 **Insight operativi.**
 - **Max Pain come debole attrattore.** Avvicinandosi alla scadenza, il prezzo tende *statisticamente* a essere richiamato verso il Max Pain (per via dell'hedging di chi ha venduto le opzioni). È una tendenza leggera, non una regola: contano di più i Wall e il Gamma Flip.
