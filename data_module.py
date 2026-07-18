@@ -14,7 +14,8 @@ import streamlit as st
 from scipy.stats import norm as _scipy_norm
 
 
-def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_series, spot):
+def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_series, spot,
+                              risk_free_rate=0.045, dividend_yield=0.013):
     """
     Calcola il Vanna per ogni riga del DataFrame con operazioni numpy vettorizzate.
 
@@ -28,8 +29,8 @@ def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_s
 
     Il Vanna e' identico per Call e Put: la vettorizzazione e' completa.
     """
-    RISK_FREE_RATE = 0.045
-    DIVIDEND_YIELD = 0.013   # SPX ~1.3% annuo: il drift corretto in d1/d2 e' (r - q)
+    # risk_free_rate e dividend_yield arrivano dai parametri di modello impostabili nella
+    # sidebar dell'app (default calibrati su un indice azionario USA tipo SPX). Drift = (r - q).
     MIN_DTE = 1.0 / 365.25
     MIN_IV = 0.001
 
@@ -46,7 +47,7 @@ def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_s
         T_v = T[valid]
         sigma_v = sigma[valid]
 
-        d1 = (np.log(S / K_v) + (RISK_FREE_RATE - DIVIDEND_YIELD + 0.5 * sigma_v ** 2) * T_v) / (sigma_v * np.sqrt(T_v))
+        d1 = (np.log(S / K_v) + (risk_free_rate - dividend_yield + 0.5 * sigma_v ** 2) * T_v) / (sigma_v * np.sqrt(T_v))
         d2 = d1 - sigma_v * np.sqrt(T_v)
         raw_vanna = -_scipy_norm.pdf(d1) * d2 / sigma_v
         vanna[valid] = np.where(np.isfinite(raw_vanna), raw_vanna, 0.0)
@@ -54,10 +55,50 @@ def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_s
     return vanna
 
 
-def parse_cboe_csv(uploaded_file):
+def _extract_underlying_symbol(lines, df_options=None):
+    """
+    Estrae il ticker del sottostante dal file CBOE, per non assumere che sia sempre SPX.
+
+    1. Header: la prima riga utile e' tipicamente "SPX (S&P 500 INDEX)" o "AAPL (Apple Inc)".
+    2. Fallback: radice alfabetica del simbolo del contratto (colonna Calls/Puts).
+
+    Returns:
+        str | None: il ticker in maiuscolo, o None se non identificabile.
+    """
+    try:
+        for line in (lines or [])[:6]:
+            s = line.strip().strip('"').strip()
+            if not s:
+                continue
+            m = re.match(r'\^?([A-Za-z][A-Za-z0-9\.\-]{0,11})\s*\(', s)
+            if m:
+                return m.group(1).upper()
+    except Exception:
+        pass
+
+    try:
+        if df_options is not None and 'Symbol' in df_options.columns:
+            symbols = df_options['Symbol'].dropna().astype(str)
+            if not symbols.empty:
+                m = re.match(r'\s*\^?([A-Za-z]{1,6})', symbols.iloc[0])
+                if m:
+                    return m.group(1).upper()
+    except Exception:
+        pass
+
+    return None
+
+
+def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
     """
     Esegue il parsing del file CSV CBOE caricato.
     [v2] Aggiunge DEX_Notional (Delta) e VEX_Notional (Vanna) al DataFrame.
+    [v3] Estrae anche il ticker del sottostante (non piu' assunto SPX).
+    [v4] risk_free_rate e dividend_yield sono parametrici (impostabili dalla sidebar):
+         incidono solo su Vanna/VEX. Default calibrati su un indice azionario USA.
+
+    Returns:
+        (df_processed, spot_price, data_timestamp, underlying_symbol)
     """
     step = "Inizio"
     try:
@@ -65,12 +106,17 @@ def parse_cboe_csv(uploaded_file):
         step = "Lettura File"
         raw_data = uploaded_file.getvalue()
         try:
-            data_str = raw_data.decode('utf-8')
+            # 'utf-8-sig' rimuove l'eventuale BOM, che altrimenti sporcherebbe la prima riga
+            # (da cui estraiamo il ticker del sottostante).
+            data_str = raw_data.decode('utf-8-sig')
         except UnicodeDecodeError:
             data_str = raw_data.decode('latin-1')
 
         lines = data_str.split('\n')
         header_block = " ".join([line.strip() for line in lines[:15]])
+
+        # Ticker del sottostante (es. SPX, SPY, AAPL...): non assumiamo mai SPX.
+        underlying_symbol = _extract_underlying_symbol(lines)
 
         # --- 2. Estrazione Spot Price ---
         step = "Estrazione Spot Price"
@@ -158,7 +204,7 @@ def parse_cboe_csv(uploaded_file):
 
         if header_row_index is None:
             st.error("Errore: Impossibile trovare la riga 'Expiration Date' nel file.")
-            return None, None, None
+            return None, None, None, None
 
         step = "Parsing CSV Pandas"
         data_io_csv = io.StringIO(data_str)
@@ -184,14 +230,14 @@ def parse_cboe_csv(uploaded_file):
                 "Errore: impossibile determinare uno Spot Price valido dal file. "
                 "Verifica l'header del CSV CBOE (righe 'Last:'/'Bid:'/'Ask:')."
             )
-            return None, None, None
+            return None, None, None, None
 
         # --- 5. Separazione Calls/Puts ---
         step = "Separazione Call/Put"
         strike_cols = [i for i, c in enumerate(df_options_raw.columns) if c == 'Strike']
         if not strike_cols:
             st.error("Errore: Colonna 'Strike' non trovata nel CSV.")
-            return None, None, None
+            return None, None, None, None
         strike_col_index = strike_cols[0]
 
         call_cols = list(df_options_raw.columns[:strike_col_index])
@@ -227,7 +273,7 @@ def parse_cboe_csv(uploaded_file):
                 f"Errore: colonne attese mancanti dopo il parsing ({missing_cols}). "
                 f"Verifica che il file sia un export standard della catena opzioni CBOE."
             )
-            return None, None, None
+            return None, None, None, None
 
         # --- 6. Conversione Numerica ---
         step = "Conversione Numerica"
@@ -267,7 +313,7 @@ def parse_cboe_csv(uploaded_file):
                 "Errore: impossibile interpretare le date di scadenza ('Expiration Date'). "
                 "Il formato del file potrebbe essere cambiato."
             )
-            return None, None, None
+            return None, None, None, None
         n_bad_exp = int(df_processed['Expiration Date'].isna().sum())
         if n_bad_exp > 0:
             st.warning(f"Attenzione: {n_bad_exp} righe con data di scadenza non valida sono state rimosse.")
@@ -336,7 +382,9 @@ def parse_cboe_csv(uploaded_file):
                     df_processed['Strike'],
                     df_processed['DTE_Years'],
                     df_processed['IV'],
-                    SPOT
+                    SPOT,
+                    risk_free_rate=risk_free_rate,
+                    dividend_yield=dividend_yield
                 )
                 df_processed['Vanna'] = vanna_values
                 df_processed['VEX_Notional'] = (
@@ -358,11 +406,19 @@ def parse_cboe_csv(uploaded_file):
         if df_processed.empty and original_len > 0:
             st.warning("Attenzione: Il filtraggio 'OI > 0' ha rimosso tutte le righe.")
 
+        # Se l'header non conteneva il ticker, prova a ricavarlo dal simbolo dei contratti.
+        if not underlying_symbol:
+            underlying_symbol = _extract_underlying_symbol(None, df_processed)
+        if not underlying_symbol:
+            underlying_symbol = "UNDERLYING"
+            st.info("Ticker del sottostante non riconosciuto dal file: uso un'etichetta generica.")
+
         print(
-            f"[data_module] Parsing OK. Spot: {spot_price_extracted}, "
-            f"Data: {analysis_date}, Righe post-filtro: {len(df_processed)}"
+            f"[data_module] Parsing OK. Sottostante: {underlying_symbol}, "
+            f"Spot: {spot_price_extracted}, Data: {analysis_date}, "
+            f"Righe post-filtro: {len(df_processed)}"
         )
-        return df_processed, spot_price_extracted, data_timestamp_extracted
+        return df_processed, spot_price_extracted, data_timestamp_extracted, underlying_symbol
 
     except Exception as e:
         st.error(
@@ -372,4 +428,4 @@ def parse_cboe_csv(uploaded_file):
         # Traccia completa solo lato server (log), non nell'interfaccia pubblica.
         import traceback
         print("[data_module] ERRORE parsing:\n" + traceback.format_exc())
-        return None, None, None
+        return None, None, None, None
