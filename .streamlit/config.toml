@@ -1,0 +1,16 @@
+# Tema Kriterion Quant — forza il tema SCURO per tutti gli utenti.
+#
+# Senza questo file Streamlit segue la preferenza di sistema/browser del visitatore:
+# chi ha il tema chiaro vedeva l'app illeggibile, perche' i grafici Plotly e il CSS
+# custom in app.py usano colori scuri fissi.
+#
+# I valori qui replicano la palette di visualization_module.py (KRITERION_THEME)
+# e del blocco CSS in app.py, cosi' l'interfaccia e i grafici sono coerenti.
+
+[theme]
+base                     = "dark"
+primaryColor             = "#10b981"   # verde Kriterion (accenti, slider, widget attivi)
+backgroundColor          = "#0e1117"   # sfondo principale (= paper_bgcolor dei grafici)
+secondaryBackgroundColor = "#111827"   # sidebar, metriche, widget (= plot_bgcolor)
+textColor                = "#e5e7eb"   # testo
+font                     = "sans-serif"
