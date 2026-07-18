@@ -18,11 +18,12 @@ from scipy.stats import norm as _scipy_norm
 # HELPER PRIVATO: Flip Level rigoroso (esposizione ricalcolata al variare dello spot)
 # =============================================================================
 _RF_RATE   = 0.045    # risk-free rate
-_DIV_YIELD = 0.013    # dividend yield SPX (drift = r - q)
+_DIV_YIELD = 0.013    # dividend yield di default (indice azionario USA tipo SPX); drift = r - q
 _MIN_DTE   = 1.0 / 365.25
 
 
-def _exposure_curve_flip(df_selected_expiry, spot_price, greek, dealer_sign):
+def _exposure_curve_flip(df_selected_expiry, spot_price, greek, dealer_sign,
+                         risk_free_rate=_RF_RATE, dividend_yield=_DIV_YIELD):
     """
     Calcola il 'flip level' nel modo corretto: ricalcola l'esposizione netta (gamma o
     vanna) su una griglia di prezzi IPOTETICI del sottostante e trova il livello dove
@@ -64,7 +65,7 @@ def _exposure_curve_flip(df_selected_expiry, spot_price, greek, dealer_sign):
         S_grid = np.linspace(spot_price * 0.80, spot_price * 1.20, 161)
         curve  = np.empty(len(S_grid))
         for j, S in enumerate(S_grid):
-            d1 = (np.log(S / K) + (_RF_RATE - _DIV_YIELD + 0.5 * sigma ** 2) * T) / (sigma * sqrtT)
+            d1 = (np.log(S / K) + (risk_free_rate - dividend_yield + 0.5 * sigma ** 2) * T) / (sigma * sqrtT)
             if greek == 'gamma':
                 g        = _scipy_norm.pdf(d1) / (S * sigma * sqrtT)
                 notional = g * OI * 100.0 * (S ** 2) * 0.01
@@ -93,10 +94,12 @@ def _exposure_curve_flip(df_selected_expiry, spot_price, greek, dealer_sign):
 # =============================================================================
 # 1. GAMMA EXPOSURE (GEX)
 # =============================================================================
-def calculate_gex_metrics(df_selected_expiry, spot_price):
+def calculate_gex_metrics(df_selected_expiry, spot_price,
+                          risk_free_rate=_RF_RATE, dividend_yield=_DIV_YIELD):
     """
     Calcola le metriche GEX per una singola scadenza.
     Il Gamma Flip e' il livello zero-gamma (esposizione ricalcolata al variare dello spot).
+    risk_free_rate / dividend_yield incidono solo sul calcolo del Flip.
     """
     df_gex_strike = df_selected_expiry.groupby('Strike')['GEX_Signed'].sum().reset_index()
     df_gex_strike.rename(columns={'GEX_Signed': 'Net_GEX'}, inplace=True)
@@ -105,7 +108,8 @@ def calculate_gex_metrics(df_selected_expiry, spot_price):
     total_net_gex      = df_gex_strike['Net_GEX'].sum()
     # Gamma Flip = livello (zero-gamma) dove il gamma netto dei dealer, ricalcolato al variare
     # dello spot, cambia segno. Convenzione dealer: call +, put -.
-    gamma_switch_local = _exposure_curve_flip(df_selected_expiry, spot_price, 'gamma', dealer_sign=True)
+    gamma_switch_local = _exposure_curve_flip(df_selected_expiry, spot_price, 'gamma', True,
+                                              risk_free_rate, dividend_yield)
     spot_delta         = (spot_price - gamma_switch_local) if gamma_switch_local is not None else None
 
     return {
@@ -333,7 +337,8 @@ def calculate_dex_metrics(df_selected_expiry, spot_price):
 # =============================================================================
 # 9. VANNA EXPOSURE (VEX) — NUOVO
 # =============================================================================
-def calculate_vex_metrics(df_selected_expiry, spot_price):
+def calculate_vex_metrics(df_selected_expiry, spot_price,
+                          risk_free_rate=_RF_RATE, dividend_yield=_DIV_YIELD):
     """
     Calcola la Vanna Exposure (VEX) aggregata per Strike.
 
@@ -366,7 +371,8 @@ def calculate_vex_metrics(df_selected_expiry, spot_price):
 
     # Vanna Flip: livello dove la vanna netta aggregata dell'OI, ricalcolata al variare
     # dello spot, cambia segno (nessuna convenzione dealer, coerente con la VEX aggregata).
-    vanna_switch_point = _exposure_curve_flip(df_selected_expiry, spot_price, 'vanna', dealer_sign=False)
+    vanna_switch_point = _exposure_curve_flip(df_selected_expiry, spot_price, 'vanna', False,
+                                              risk_free_rate, dividend_yield)
 
     return {
         'df_vex_profile':    df_vex_strike,
