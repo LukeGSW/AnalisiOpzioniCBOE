@@ -104,7 +104,7 @@ st.markdown("""
 # Il titolo viene aggiornato col ticker del sottostante una volta caricato il file.
 _title_slot = st.empty()
 _title_slot.title("📊 Options Chain Analyzer")
-st.markdown("Powered by **Kriterion Quant**")
+st.markdown("Powered by **[Kriterion Quant](https://kriterionquant.it/?utm_source=app&utm_medium=streamlit&utm_campaign=chain_analyzer)** — ricerca quantitativa, formazione e segnali operativi · [📄 Guida completa al tool](https://kriterionquant.it/blog/spx-options-chain-analyzer.html?utm_source=app&utm_medium=streamlit) · [🎥 Video demo](https://www.youtube.com/watch?v=ycQm_y4JZTw)")
 st.caption(
     "⚠️ **Solo a scopo informativo/educativo — NON è consulenza finanziaria.** "
     "Spot, timestamp e scadenze sono estratti dal CSV caricato e possono essere non aggiornati "
@@ -183,6 +183,8 @@ with st.sidebar:
         min_value=0.0, max_value=25.0, value=1.3, step=0.10, format="%.2f",
         help="Rendimento da dividendi annuo del sottostante. Default 1.3% (SPX). Metti 0 se non paga dividendi."
     ) / 100.0
+    st.divider()
+    st.markdown("**📈 Kriterion Quant** — questo tool è gratuito e open source. Sul sito trovi la guida completa al tool, la ricerca quantitativa e il servizio di segnali operativi: **[kriterionquant.it](https://kriterionquant.it/?utm_source=app&utm_medium=streamlit&utm_campaign=chain_analyzer_sidebar)**")
 
 
 @st.cache_data
