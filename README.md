@@ -2,6 +2,12 @@
 
 # Kriterion Quant - Analizzatore Chain Opzioni
 
+🚀 **Prova subito l'app (gratis, senza registrazione):** https://appkzzsu3pofdhvgezsr5jh.streamlit.app/
+
+📄 **Guida completa passo-passo:** https://kriterionquant.it/blog/spx-options-chain-analyzer.html
+
+🎥 **Video dimostrativo (14 min):** https://www.youtube.com/watch?v=ycQm_y4JZTw
+
 Una dashboard Streamlit ad alte prestazioni per l'analisi quantitativa posizionale di una chain di opzioni, basata su file CSV scaricati dalla CBOE.
 
 Funziona con **qualsiasi sottostante** disponibile sulla CBOE (indici come SPX, ETF come SPY, singole azioni): il ticker viene rilevato automaticamente dall'header del CSV e usato in tutta l'app e nel nome del file JSON esportato.
@@ -58,8 +64,8 @@ Per eseguire questa applicazione localmente:
 1.  **Clona il repository:**
 
     ```bash
-    git clone https://[TUO_URL_REPOSITORY_GITHUB]
-    cd [NOME_CARTELLA_PROGETTO]
+    git clone https://github.com/LukeGSW/AnalisiOpzioniCBOE.git
+    cd AnalisiOpzioniCBOE
     ```
 
 2.  **Crea e attiva un ambiente virtuale:**
