@@ -147,19 +147,21 @@ def calculate_oi_walls(df_selected_expiry, spot_price):
         (df_oi_relevant['Strike'] <= wall_upper)
     ]
 
-    oi_puts_support  = df_wall_zone[(df_wall_zone['Type'] == 'Put')  & (df_wall_zone['Strike'] <= spot_price)]
+    # OI sommato per strike: sulla stessa scadenza possono convivere piu' radici
+    # (es. SPX mensile + SPXW, o SPXO + SPXW) con lo stesso strike su righe separate.
+    oi_puts_support  = df_wall_zone[(df_wall_zone['Type'] == 'Put')  & (df_wall_zone['Strike'] <= spot_price)] \
+        .groupby('Strike')['OI'].sum()
     put_wall_strike, max_put_oi = (None, 0)
     if not oi_puts_support.empty:
-        idx_max         = oi_puts_support['OI'].idxmax()
-        put_wall_strike = oi_puts_support.loc[idx_max]['Strike']
-        max_put_oi      = oi_puts_support['OI'].max()
+        put_wall_strike = oi_puts_support.idxmax()
+        max_put_oi      = oi_puts_support.max()
 
-    oi_calls_res     = df_wall_zone[(df_wall_zone['Type'] == 'Call') & (df_wall_zone['Strike'] >= spot_price)]
+    oi_calls_res     = df_wall_zone[(df_wall_zone['Type'] == 'Call') & (df_wall_zone['Strike'] >= spot_price)] \
+        .groupby('Strike')['OI'].sum()
     call_wall_strike, max_call_oi = (None, 0)
     if not oi_calls_res.empty:
-        idx_max          = oi_calls_res['OI'].idxmax()
-        call_wall_strike = oi_calls_res.loc[idx_max]['Strike']
-        max_call_oi      = oi_calls_res['OI'].max()
+        call_wall_strike = oi_calls_res.idxmax()
+        max_call_oi      = oi_calls_res.max()
 
     oi_calls_grouped = df_oi_relevant[df_oi_relevant['Type'] == 'Call'].groupby('Strike')['OI'].sum()
     oi_puts_grouped  = df_oi_relevant[df_oi_relevant['Type'] == 'Put'].groupby('Strike')['OI'].sum()
