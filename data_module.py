@@ -7,6 +7,7 @@
 
 import pandas as pd
 import numpy as np
+import csv
 import io
 import re
 import datetime as dt
@@ -55,38 +56,57 @@ def _compute_vanna_vectorized(type_series, strike_series, dte_years_series, iv_s
     return vanna
 
 
+def _contract_roots(df_options):
+    """Radici dei simboli dei contratti (es. SPXW261120C07320000 -> SPXW), ordinate per frequenza."""
+    try:
+        if df_options is not None and 'Symbol' in df_options.columns:
+            roots = (df_options['Symbol'].dropna().astype(str)
+                     .str.extract(r'^\s*\^?([A-Za-z]+)', expand=False).dropna().str.upper())
+            return list(roots.value_counts().index)
+    except Exception:
+        pass
+    return []
+
+
 def _extract_underlying_symbol(lines, df_options=None):
     """
     Estrae il ticker del sottostante dal file CBOE, per non assumere che sia sempre SPX.
 
-    1. Header: la prima riga utile e' tipicamente "SPX (S&P 500 INDEX)" o "AAPL (Apple Inc)".
-    2. Fallback: radice alfabetica del simbolo del contratto (colonna Calls/Puts).
+    Formati della prima cella dell'header gestiti:
+      - "SPX (S&P 500 INDEX)"   -> ticker in testa (formato storico)
+      - "S&P 500 INDEX (^SPX)"  -> ticker tra parentesi (export CBOE da novembre 2026)
+    Il candidato viene confermato con le radici dei contratti (SPX -> SPXW/SPX/SPXO), cosi'
+    un nome tipo "TESLA (TSLA)" non viene scambiato per il ticker.
+    Fallback: la radice piu' frequente dei simboli dei contratti.
 
     Returns:
         str | None: il ticker in maiuscolo, o None se non identificabile.
     """
+    candidates = []
     try:
         for line in (lines or [])[:6]:
-            s = line.strip().strip('"').strip()
-            if not s:
+            if not line.strip():
                 continue
-            m = re.match(r'\^?([A-Za-z][A-Za-z0-9\.\-]{0,11})\s*\(', s)
-            if m:
-                return m.group(1).upper()
+            first_cell = next(csv.reader([line.strip()]), [''])[0].strip()
+            for pattern in (r'\(\s*\^([A-Za-z0-9\.\-]{1,12})\s*\)',          # (^SPX)
+                            r'^\^?([A-Za-z][A-Za-z0-9\.\-]{0,11})\s*\(',      # SPX (...)
+                            r'\(\s*([A-Z][A-Z0-9\.\-]{0,11})\s*\)'):          # (TSLA)
+                m = re.search(pattern, first_cell)
+                if m and m.group(1).upper() not in candidates:
+                    candidates.append(m.group(1).upper())
+            if candidates:
+                break
     except Exception:
         pass
 
-    try:
-        if df_options is not None and 'Symbol' in df_options.columns:
-            symbols = df_options['Symbol'].dropna().astype(str)
-            if not symbols.empty:
-                m = re.match(r'\s*\^?([A-Za-z]{1,6})', symbols.iloc[0])
-                if m:
-                    return m.group(1).upper()
-    except Exception:
-        pass
-
-    return None
+    roots = _contract_roots(df_options)
+    if roots:
+        for c in candidates:
+            if any(r.startswith(c) for r in roots):
+                return c
+    if candidates:
+        return candidates[0]
+    return roots[0] if roots else None
 
 
 def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
@@ -114,9 +134,6 @@ def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
 
         lines = data_str.split('\n')
         header_block = " ".join([line.strip() for line in lines[:15]])
-
-        # Ticker del sottostante (es. SPX, SPY, AAPL...): non assumiamo mai SPX.
-        underlying_symbol = _extract_underlying_symbol(lines)
 
         # --- 2. Estrazione Spot Price ---
         step = "Estrazione Spot Price"
@@ -147,9 +164,16 @@ def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
         analysis_date = pd.Timestamp.now().normalize()
 
         try:
-            date_match = re.search(r'Date:\s*(.*?)(?:,Bid|,Ask|GMT)', header_block)
+            # Cerca riga per riga: la data finisce alla chiusura della cella (virgolette, export
+            # attuale: "Date: November 18, 2026, 9:15 PM GMT+1",...) oppure prima di ",Bid"/",Ask"
+            # (export storico non quotato). Il fuso orario resta nel testo mostrato all'utente.
+            date_match = None
+            for line in lines[:15]:
+                date_match = re.search(r'Date:\s*(.*?)\s*(?:"|,\s*"?(?:Bid|Ask)\b|$)', line.strip())
+                if date_match and date_match.group(1):
+                    break
+                date_match = None
             if date_match:
-                # Rimuove eventuali virgolette residue (es. '...EDT"') e spazi
                 data_timestamp_extracted = date_match.group(1).strip().strip('"').strip()
             else:
                 st.warning(
@@ -198,7 +222,8 @@ def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
         step = "Ricerca Header CSV"
         header_row_index = None
         for i, line in enumerate(lines):
-            if line.strip().startswith("Expiration Date"):
+            # L'export CBOE attuale mette ogni cella tra virgolette: "Expiration Date","Calls",...
+            if line.strip().lstrip('"').startswith("Expiration Date"):
                 header_row_index = i
                 break
 
@@ -265,6 +290,13 @@ def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
 
         df_options_clean = pd.concat([df_calls, df_puts], ignore_index=True)
 
+        # Radice del contratto (SPXW, SPX, SPXO...): lo stesso file puo' contenerne piu' d'una
+        # sulla stessa scadenza e sullo stesso strike. Le metriche aggregano per strike.
+        if 'Symbol' in df_options_clean.columns:
+            df_options_clean['Root'] = (df_options_clean['Symbol'].astype(str)
+                                        .str.extract(r'^\s*\^?([A-Za-z]+)', expand=False)
+                                        .str.upper())
+
         # Verifica che le colonne canoniche essenziali esistano (header CBOE variato -> errore chiaro).
         required_cols = ['Strike', 'OI', 'Delta', 'Gamma']
         missing_cols = [c for c in required_cols if c not in df_options_clean.columns]
@@ -319,7 +351,37 @@ def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
             st.warning(f"Attenzione: {n_bad_exp} righe con data di scadenza non valida sono state rimosse.")
             df_processed = df_processed[df_processed['Expiration Date'].notna()].copy()
 
-        df_processed['DTE_Days'] = (df_processed['Expiration Date'] - analysis_date).dt.days
+        # --- Serie gia' regolate: scadute (o in scadenza oggi) e senza alcuna quotazione/greca ---
+        # Es. SPXO (SPX AM-settled settimanali): nel giorno di scadenza si regolano all'apertura, ma
+        # l'export continua a riportarle con bid/ask/greche a zero e il vecchio OI. Quell'OI non e'
+        # piu' attivo e falserebbe Wall, Max Pain e P/C. Si esclude solo la serie (radice+scadenza)
+        # in cui NESSUNA riga ha quotazioni o greche: le serie vive non vengono mai toccate.
+        step = "Esclusione Serie Regolate"
+        if 'Root' in df_processed.columns and {'Bid', 'Ask'}.issubset(df_processed.columns):
+            no_market = (
+                (df_processed['Bid'] == 0) & (df_processed['Ask'] == 0) &
+                (df_processed['IV'].fillna(0) == 0) &
+                (df_processed['Delta'].fillna(0) == 0) & (df_processed['Gamma'].fillna(0) == 0)
+            )
+            series_dead = no_market.groupby(
+                [df_processed['Root'].fillna(''), df_processed['Expiration Date']]
+            ).transform('all')
+            settled = series_dead & (df_processed['Expiration Date'] <= analysis_date)
+            if settled.any() and not settled.all():
+                excl = df_processed[settled]
+                desc = ", ".join(
+                    f"{root} {exp:%d/%m/%Y}"
+                    for root, exp in excl[['Root', 'Expiration Date']].drop_duplicates()
+                    .itertuples(index=False)
+                )
+                st.info(
+                    f"Escluse le serie gia' regolate e senza quotazioni ({desc}): "
+                    f"open interest non piu' attivo pari a {excl['OI'].sum():,.0f} contratti. "
+                    f"Sono tipicamente opzioni AM-settled (es. SPXO) che scadono all'apertura."
+                )
+                df_processed = df_processed[~settled].copy()
+
+        df_processed['DTE_Days'] =(df_processed['Expiration Date'] - analysis_date).dt.days
         df_processed['DTE_Years'] = df_processed['DTE_Days'] / 365.25
 
         # Greche mancanti su strike con OI: segnala (trasparenza) e azzera SOLO per l'esposizione.
@@ -406,9 +468,9 @@ def parse_cboe_csv(uploaded_file, risk_free_rate=0.045, dividend_yield=0.013):
         if df_processed.empty and original_len > 0:
             st.warning("Attenzione: Il filtraggio 'OI > 0' ha rimosso tutte le righe.")
 
-        # Se l'header non conteneva il ticker, prova a ricavarlo dal simbolo dei contratti.
-        if not underlying_symbol:
-            underlying_symbol = _extract_underlying_symbol(None, df_processed)
+        # Ticker del sottostante (es. SPX, SPY, AAPL...): non assumiamo mai SPX.
+        # Header confermato con le radici dei contratti; fallback sulla radice piu' frequente.
+        underlying_symbol = _extract_underlying_symbol(lines, df_processed)
         if not underlying_symbol:
             underlying_symbol = "UNDERLYING"
             st.info("Ticker del sottostante non riconosciuto dal file: uso un'etichetta generica.")
